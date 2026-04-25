@@ -82,10 +82,12 @@ def main(
 
 from .commands.auth import auth_group
 from .commands.backtest import backtest_group
+from .commands.community import community_group
 from .commands.strategy import strategy_group
 
 main.add_command(auth_group, "auth")
 main.add_command(backtest_group, "backtest")
+main.add_command(community_group, "community")
 main.add_command(strategy_group, "strategy")
 
 

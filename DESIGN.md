@@ -22,7 +22,8 @@ MVP 目标：在 Windows 和常见命令行环境中稳定运行，并能被 age
 jqcli
 ├── auth        认证管理
 ├── strategy    策略管理
-└── backtest    回测管理
+├── backtest    回测管理
+└── community   社区文章
 ```
 
 ### 技术选型
@@ -315,6 +316,63 @@ jqcli backtest rm <backtest_id> [--yes] [--compile]
 - 建议传 `backtest ls` 返回的 `list_id`。
 - 非交互模式必须传 `--yes`。
 
+### `jqcli community latest`
+
+读取聚宽社区最新发帖列表。
+
+```
+jqcli community latest
+                       [--page-size <n>]
+                       [--max-pages <n>]
+                       [--until <YYYY-MM-DD|YYYY-MM-DD HH:MM:SS>]
+                       [--list-type <n>]
+                       [--tags <ids>]
+```
+
+- 默认请求 `/community/post/listV2`，参数为 `limit=50&page=1&type=isNewPublish&cate=3&tags=`。
+- `listType=1` 为文章分类，聚宽前端通过 `/community/post/tagList` 将其映射到 `cate=3`。
+- 未传 `--max-pages` 且未传 `--until` 时只读取 1 页。
+- 传 `--max-pages` 时最多读取指定页数。
+- 传 `--until` 时按文章发布时间 `addTime` 截止；日期格式按当天 `00:00:00` 处理。
+- 聚宽会把置顶帖放在最新列表前面。截止判断中，早于截止时间的置顶帖会被跳过但不会触发停止；早于截止时间的非置顶文章才触发停止翻页。
+- JSON 输出包含 `items`、`page_size`、`pages_read`、`max_pages`、`until`、`stopped_by_until`、`total_count` 和 `curr_time`。
+
+### `jqcli community detail`
+
+读取聚宽社区文章详情、文章内策略信息和讨论区。
+
+```
+jqcli community detail <post_id>
+                        [--reply-page <n>]
+                        [--reply-pages <n>]
+                        [--all-replies]
+```
+
+- 文章详情请求 `/community/post/detailV2?postId=<post_id>`。
+- 讨论区请求 `/community/post/replyList?postId=<post_id>&page=<page>`。
+- 默认读取讨论区第 1 页；`--reply-pages` 读取多页；`--all-replies` 按 `totalCount` 读取全部页。
+- 输出顶层为 `post`、`strategy` 和 `discussion`。
+- `post.backtest`、`post.research`、`post.file` 为文章内策略/研究/附件信息；`strategy` 顶层重复这些字段，便于调用方直接读取。
+- `discussion.items[*].backtest` 表示回复中附带的回测信息；`sub_replies` 表示接口随主回复返回的子回复，`sub_reply_remaining_count` 表示仍需展开的子回复数量。
+
+### `jqcli community clone-strategy`
+
+检查或执行文章内回测策略克隆。
+
+```
+jqcli community clone-strategy <post_id>
+                               [--backtest-id <id>]
+                               [--reply-id <id>]
+                               [--yes]
+```
+
+- 该命令需要登录态。
+- 默认只请求 `/community/post/checkBacktestView`，参数为 `postId`、`backId`、`ruleKey=clone_algorithm`，不会扣积分。
+- `--backtest-id` 不传时，先调用 `community detail` 的详情接口解析 `strategy.backtest.id`。
+- 传 `--yes` 时，先调用检查接口，再把检查接口返回的 `secret`、`random`、`reason` 等字段提交给 `/community/post/dealCreditsHander` 执行克隆。
+- JSON 检查输出会隐藏 `secret`，只返回 `secret_present` 和 `random_present`。
+- 回复中附带回测时可传 `--reply-id`。
+
 ---
 
 ## 七、错误处理
@@ -346,12 +404,14 @@ jqcli/
 │   │   ├── client.py
 │   │   ├── auth.py
 │   │   ├── strategy.py
-│   │   └── backtest.py
+│   │   ├── backtest.py
+│   │   └── community.py
 │   ├── commands/
 │   │   ├── __init__.py
 │   │   ├── auth.py
 │   │   ├── strategy.py
-│   │   └── backtest.py
+│   │   ├── backtest.py
+│   │   └── community.py
 │   ├── config.py
 │   ├── errors.py
 │   └── output.py

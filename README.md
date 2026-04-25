@@ -2,7 +2,7 @@
 
 聚宽（JoinQuant）策略与回测管理命令行工具。
 
-`jqcli` 面向自动化调用和真实聚宽网页接口封装，支持认证、策略管理、正式回测、编译运行记录查询与删除。所有命令都可以使用 `--non-interactive --format json` 作为机器可读主路径。
+`jqcli` 面向自动化调用和真实聚宽网页接口封装，支持认证、策略管理、正式回测、编译运行记录查询与删除、社区最新文章列表。所有命令都可以使用 `--non-interactive --format json` 作为机器可读主路径。
 
 ## 安装与运行
 
@@ -545,6 +545,334 @@ jqcli --env-file .env --non-interactive --format json backtest rm <list_id> --ye
   }
 }
 ```
+
+## Community API
+
+社区最新文章列表基于用户可访问的聚宽社区页面实现。
+
+页面入口：
+
+```text
+https://www.joinquant.com/view/community/list?listType=1&type=isNewPublish&tags=
+```
+
+真实接口：
+
+```text
+GET /community/post/listV2
+GET /community/post/detailV2
+GET /community/post/replyList
+POST /community/post/checkBacktestView
+POST /community/post/dealCreditsHander
+```
+
+默认参数：
+
+```text
+limit=50
+page=1
+type=isNewPublish
+cate=3
+tags=
+```
+
+分类说明：
+
+- `listType=1` 为“文章”
+- 前端先请求 `/community/post/tagList`，其中 `type=1` 对应 `tagId=3`
+- 因此文章列表实际提交 `cate=3`
+
+### community latest
+
+读取社区最新发帖列表。默认读取 1 页，每页 50 条。
+
+```bash
+jqcli --format json community latest
+```
+
+指定页数：
+
+```bash
+jqcli --format json community latest --max-pages 3
+```
+
+指定截止时间或日期：
+
+```bash
+jqcli --format json community latest --until 2026-04-25
+jqcli --format json community latest --until "2026-04-25 12:00:00"
+```
+
+参数：
+
+- `--page-size <n>`：每页条数，默认 `50`
+- `--max-pages <n>`：最多读取页数；不传且未设置 `--until` 时默认 1 页
+- `--until <date|datetime>`：读取到该发布时间为止，支持 `YYYY-MM-DD` 或 `YYYY-MM-DD HH:MM:SS`
+- `--list-type <n>`：默认 `1`，当前用于文章分类
+- `--tags <ids>`：标签 ID，多个用逗号分隔
+
+置顶帖处理：
+
+- 聚宽最新发帖接口会把置顶帖放在列表前面，即使置顶帖的发布时间很早。
+- 使用 `--until` 时，`jqcli` 会跳过早于截止时间的置顶帖，但不会因为置顶帖而停止翻页。
+- 只有遇到早于截止时间的非置顶文章时，才认为已经读取到截止位置并停止。
+
+输出：
+
+```json
+{
+  "items": [
+    {
+      "id": "990cd272a9801944845af14b1632b9ad",
+      "title": "红利低波ETF RSI择时策略-年化21回撤13",
+      "url": "https://www.joinquant.com/view/community/detail/990cd272a9801944845af14b1632b9ad",
+      "author": {
+        "id": "e7ce9f37b2a20675e30527d3f81e5059",
+        "name": "凌空飞影"
+      },
+      "published_at": "2026-04-25 21:05:05",
+      "updated_at": "2026-04-25 21:05:05",
+      "last_active_at": "2026-04-25 21:05:05",
+      "last_reply_at": "",
+      "reply_count": 0,
+      "view_count": 66,
+      "like_count": 1,
+      "collection_count": 2,
+      "is_top": false,
+      "is_best": false,
+      "backtest": {
+        "id": "947c5c8b3fa520bfdb1fe86d32e2d67f",
+        "clone_count": 3,
+        "pic_url": ""
+      },
+      "research": {
+        "notebook_path": "",
+        "notebook_report": "",
+        "notebook_clone_count": 0
+      },
+      "file": {
+        "key": "",
+        "name": "",
+        "type": "",
+        "download_count": 0
+      },
+      "tags": [
+        {
+          "id": "1395",
+          "name": "本地数据JQData"
+        }
+      ],
+      "content_preview": "---\n## 策略简介\n..."
+    }
+  ],
+  "page_size": 50,
+  "pages_read": 1,
+  "max_pages": 1,
+  "until": null,
+  "stopped_by_until": false,
+  "total_count": 33894,
+  "curr_time": "2026-04-25 21:39:18"
+}
+```
+
+文章附加信息字段：
+
+- `backtest.id`：文章关联回测 ID
+- `backtest.clone_count`：回测克隆次数
+- `backtest.pic_url`：回测图片 URL，接口有值时返回
+- `research.notebook_path`：研究/Notebook 路径
+- `research.notebook_report`：研究报告 HTML 路径
+- `research.notebook_clone_count`：研究克隆次数
+- `file.*`：文章附件 key、文件名、类型和下载次数
+
+### community detail
+
+读取文章详情，包含文章正文、文章内策略信息和讨论区。
+
+```bash
+jqcli --format json community detail <post_id>
+```
+
+读取多页讨论区：
+
+```bash
+jqcli --format json community detail <post_id> --reply-pages 3
+jqcli --format json community detail <post_id> --all-replies
+```
+
+参数：
+
+- `post_id`：文章 ID，通常来自 `community latest` 输出的 `id`
+- `--reply-page <n>`：讨论区起始页，默认 `1`
+- `--reply-pages <n>`：读取讨论区页数，默认 `1`
+- `--all-replies`：读取全部讨论区页；聚宽讨论区每页 20 条
+
+真实接口：
+
+- 文章详情：`GET /community/post/detailV2?postId=<post_id>`
+- 讨论区：`GET /community/post/replyList?postId=<post_id>&page=<page>`
+- 展开子回复时，聚宽前端同样使用 `replyList`，参数增加 `oReplyId=<reply_id>`；当前详情输出包含接口已随主回复返回的子回复和剩余数量。
+
+输出：
+
+```json
+{
+  "post": {
+    "id": "19e1885a8221879759080258c9c84061",
+    "requested_id": "10e87b3f20c7d720419299d3a2d4d219",
+    "title": "红利低波ETF RSI择时策略-年化21回撤13",
+    "url": "https://www.joinquant.com/view/community/detail/10e87b3f20c7d720419299d3a2d4d219",
+    "content": "---\n## 策略简介\n...",
+    "author": {
+      "id": "dbb53ca26723ebef4df12fc3b4bed219",
+      "name": "凌空飞影",
+      "head_img_key": "",
+      "vip_type": ""
+    },
+    "published_at": "2026-04-25 21:05:05",
+    "updated_at": "2026-04-25 21:05:05",
+    "reply_count": 1,
+    "view_count": 101,
+    "like_count": 2,
+    "collection_count": 2,
+    "backtest": {
+      "id": "5b080ec242d8ab0755d446f2068eba4e",
+      "name": "红利低波ETF_RSI择时策略",
+      "clone_count": 5
+    },
+    "research": {
+      "notebook_path": "",
+      "notebook_report": "",
+      "notebook_clone_count": 0
+    },
+    "file": {
+      "key": "",
+      "name": "",
+      "type": "",
+      "size": 0,
+      "download_count": 0
+    },
+    "tags": [
+      {
+        "id": "1",
+        "name": "策略"
+      }
+    ]
+  },
+  "strategy": {
+    "backtest": {
+      "id": "5b080ec242d8ab0755d446f2068eba4e",
+      "name": "红利低波ETF_RSI择时策略",
+      "clone_count": 5
+    },
+    "research": {
+      "notebook_path": "",
+      "notebook_report": "",
+      "notebook_clone_count": 0
+    },
+    "file": {
+      "key": "",
+      "name": "",
+      "type": "",
+      "size": 0,
+      "download_count": 0
+    }
+  },
+  "discussion": {
+    "items": [
+      {
+        "id": "ceaa7f36920ad9d435d6478a3de3f1d6",
+        "content": "红利低波plus策略, 回测对比仅买入持有收益明显增强.",
+        "author": {
+          "id": "8f3116afba34e0a6ba9dc02bb0ce7574",
+          "name": "K998800"
+        },
+        "published_at": "2026-04-25 21:55:52",
+        "backtest": {
+          "id": "",
+          "name": "",
+          "overall_return": null
+        },
+        "sub_replies": [],
+        "sub_reply_remaining_count": 0
+      }
+    ],
+    "bounty_items": [],
+    "start_page": 1,
+    "pages_read": 1,
+    "max_pages": null,
+    "total_count": 1,
+    "can_choose_best": false,
+    "is_faq": false,
+    "curr_time": "2026-04-25 22:18:23"
+  }
+}
+```
+
+### community clone-strategy
+
+读取文章中回测策略的克隆检查信息，或确认后执行克隆。
+
+默认只调用检查接口，不会扣积分：
+
+```bash
+jqcli --env-file .env --format json community clone-strategy <post_id> --backtest-id <backtest_id>
+```
+
+确认执行克隆：
+
+```bash
+jqcli --env-file .env --format json community clone-strategy <post_id> --backtest-id <backtest_id> --yes
+```
+
+参数：
+
+- `post_id`：文章 ID，可使用 `community detail` 或 `community latest` 输出的文章 ID
+- `--backtest-id <id>`：文章内回测 ID；不传时会先读取文章详情中的 `strategy.backtest.id`
+- `--reply-id <id>`：如果克隆的是讨论区回复中附带的回测，传对应回复 ID
+- `--yes`：确认执行克隆；不传时只调用检查接口
+
+真实接口流程：
+
+1. `POST /community/post/checkBacktestView`
+   - `postId=<post_id>`
+   - `backId=<backtest_id>`
+   - `ruleKey=clone_algorithm`
+   - 可选 `replyId=<reply_id>`
+2. `POST /community/post/dealCreditsHander`
+   - 仅传 `--yes` 时调用
+   - 提交检查接口返回的 `secret`、`random`、`reason` 等字段
+
+检查输出示例：
+
+```json
+{
+  "post_id": "10e87b3f20c7d720419299d3a2d4d219",
+  "backtest_id": "5b080ec242d8ab0755d446f2068eba4e",
+  "reply_id": "",
+  "rule_key": "clone_algorithm",
+  "can_clone": true,
+  "reason": "more",
+  "amount": 48,
+  "reduce": 10,
+  "usable": 2,
+  "is_view": true,
+  "secret_present": true,
+  "random_present": true,
+  "url": "",
+  "redirect": "",
+  "execute": false,
+  "hint": "传 --yes 才会执行克隆并可能扣除积分"
+}
+```
+
+说明：
+
+- `amount`：当前可用积分
+- `reduce`：本次克隆预计扣除积分
+- `reason=more`：积分充足，可执行克隆
+- `reason=deny`：积分不足或无权限
+- `secret` 不会输出，只返回 `secret_present`
 
 ## 状态与错误码
 
