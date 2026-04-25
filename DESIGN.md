@@ -262,12 +262,16 @@ jqcli backtest run <strategy_id>
                    [--end <YYYY-MM-DD>]
                    [--capital <amount>]
                    [--freq {day,minute}]
+                   [--compile]
                    [--wait]
                    [--poll-interval <seconds>]
 ```
 
 - `--end` 默认今日，按本地日期计算。
-- 默认异步提交并返回回测 ID。
+- 默认发起正式回测，提交 `backtest[type]=0`，记录进入 `/algorithm/backtest/list`。
+- `--compile` 保留聚宽编译运行路径，提交 `backtest[type]=1`，记录进入 `/algorithm/backtest/buildList`。
+- 两种方式都 POST `/algorithm/index/build`，差异由 `backtest[type]` 决定。
+- 默认异步提交并返回详情 ID 和列表 ID。
 - `--wait` 轮询直到完成、失败或全局 `--timeout` 到期。
 - Ctrl-C 只停止本地等待，不取消远端回测。
 
@@ -276,11 +280,13 @@ jqcli backtest run <strategy_id>
 列出某策略下的回测记录。
 
 ```
-jqcli backtest ls <strategy_id> [--status {all,running,done,failed}] [--limit <n>] [--all]
+jqcli backtest ls <strategy_id> [--status {all,running,done,failed}] [--limit <n>] [--all] [--compile]
 ```
 
 - 默认返回最近 50 条。
 - `--all` 拉取所有可用数据。
+- 默认请求正式回测列表 `/algorithm/backtest/list`。
+- `--compile` 请求编译运行列表 `/algorithm/backtest/buildList`。
 - 状态枚举按真实 API 校准，内部至少归一为 `running`、`done`、`failed`。
 
 ### `jqcli backtest show`
@@ -301,10 +307,12 @@ jqcli backtest show <backtest_id>
 删除回测记录。
 
 ```
-jqcli backtest rm <backtest_id> [--yes]
+jqcli backtest rm <backtest_id> [--yes] [--compile]
 ```
 
-- 仅在真实 API 支持删除时实现。
+- 默认请求 `/algorithm/backtest/del?type=0` 删除正式回测。
+- `--compile` 请求 `/algorithm/backtest/del?type=1` 删除编译运行记录。
+- 建议传 `backtest ls` 返回的 `list_id`。
 - 非交互模式必须传 `--yes`。
 
 ---
