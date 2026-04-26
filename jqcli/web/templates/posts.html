@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="toolbar">
+  <input id="q" placeholder="搜索标题或正文">
+  <select id="period">
+    <option value="">全部周期</option>
+    <option value="1">回测 > 1 年</option>
+    <option value="3">回测 > 3 年</option>
+  </select>
+  <input id="minSharpe" type="number" step="0.1" placeholder="最低夏普">
+  <select id="label">
+    <option value="">全部标签</option>
+    <option>原创候选</option>
+    <option>详细思路</option>
+    <option>简单调参</option>
+    <option>简单组合</option>
+    <option>疑似过拟合</option>
+  </select>
+  <button id="searchBtn">筛选</button>
+  <button id="reindexBtn">重建索引</button>
+</section>
+<section class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>时间</th>
+        <th>标题</th>
+        <th>周期</th>
+        <th>年化</th>
+        <th>夏普</th>
+        <th>标签</th>
+        <th>状态</th>
+        <th>操作</th>
+      </tr>
+    </thead>
+    <tbody id="postsBody"></tbody>
+  </table>
+</section>
+<nav class="pager">
+  <button id="prevPage">上一页</button>
+  <span id="pageInfo"></span>
+  <button id="nextPage">下一页</button>
+</nav>
+{% endblock %}
+{% block scripts %}
+<script>window.JQCLI_PAGE = "posts";</script>
+{% endblock %}

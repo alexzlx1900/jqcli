@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block content %}
+<article id="postDetail" class="detail"></article>
+{% endblock %}
+{% block scripts %}
+<script>
+window.JQCLI_PAGE = "detail";
+window.JQCLI_POST_ID = "{{ post_id }}";
+</script>
+{% endblock %}

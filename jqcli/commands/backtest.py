@@ -8,7 +8,15 @@ import click
 from rich.console import Console
 from rich.table import Table
 
-from jqcli.api.backtest import delete_backtest_record, get_backtest, list_backtests, run_backtest
+from jqcli.api.backtest import (
+    delete_backtest_record,
+    get_backtest,
+    get_backtest_logs,
+    get_backtest_result,
+    get_backtest_stats,
+    list_backtests,
+    run_backtest,
+)
 from jqcli.api.client import ApiClient
 from jqcli.cli import AppContext
 from jqcli.errors import ConfirmationRequiredError, NotAuthenticatedError, TimeoutError
@@ -26,6 +34,10 @@ def backtest_group() -> None:
 def make_client(app: AppContext) -> ApiClient:
     if not (app.token or app.cookie):
         raise NotAuthenticatedError()
+    return ApiClient(app.api_base, token=app.token, cookie=app.cookie, timeout=app.timeout)
+
+
+def make_optional_client(app: AppContext) -> ApiClient:
     return ApiClient(app.api_base, token=app.token, cookie=app.cookie, timeout=app.timeout)
 
 
@@ -52,11 +64,16 @@ def render_backtest_table(items: list[dict[str, Any]]) -> None:
     Console().print(table)
 
 
+def has_core_metrics(payload: dict[str, Any]) -> bool:
+    metrics = payload.get("metrics")
+    return isinstance(metrics, dict) and metrics.get("annual_algo_return") is not None and metrics.get("sharpe") is not None
+
+
 def wait_for_backtest(client: ApiClient, backtest_id: str, *, timeout: float, poll_interval: float) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
     while True:
         payload = get_backtest(client, backtest_id)
-        if str(payload.get("status")) in TERMINAL_STATUSES:
+        if has_core_metrics(payload):
             return payload
         if time.monotonic() >= deadline:
             raise TimeoutError()
@@ -150,6 +167,81 @@ def show(app: AppContext, backtest_id: str) -> None:
         click.echo(f"状态: {payload.get('status', '')}")
         if payload.get("error"):
             click.echo(f"错误: {payload['error']}")
+
+
+@backtest_group.command("stats")
+@click.argument("backtest_id")
+@click.pass_obj
+def stats(app: AppContext, backtest_id: str) -> None:
+    client = make_optional_client(app)
+    try:
+        payload = get_backtest_stats(client, backtest_id)
+    finally:
+        close_client(client)
+    if app.json_output:
+        write_json(payload)
+    else:
+        metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
+        click.echo(f"回测 ID: {payload.get('id', '')}")
+        click.echo(f"策略收益: {metrics.get('algorithm_return', '')}")
+        click.echo(f"年化收益: {metrics.get('annual_algo_return', '')}")
+        click.echo(f"最大回撤: {metrics.get('max_drawdown', '')}")
+        click.echo(f"Sharpe: {metrics.get('sharpe', '')}")
+
+
+@backtest_group.command("result")
+@click.argument("backtest_id")
+@click.option("--offset", type=int, default=0, show_default=True)
+@click.option("--user-record-offset", type=int, default=0, show_default=True)
+@click.pass_obj
+def result(app: AppContext, backtest_id: str, offset: int, user_record_offset: int) -> None:
+    client = make_optional_client(app)
+    try:
+        payload = get_backtest_result(
+            client,
+            backtest_id,
+            offset=offset,
+            user_record_offset=user_record_offset,
+        )
+    finally:
+        close_client(client)
+    if app.json_output:
+        write_json(payload)
+    else:
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        state = data.get("state", "")
+        result_data = data.get("result") if isinstance(data.get("result"), dict) else {}
+        count = result_data.get("count", "")
+        click.echo(f"回测 ID: {payload.get('id', '')}")
+        click.echo(f"状态: {state}")
+        click.echo(f"数据点: {count}")
+
+
+@backtest_group.command("logs")
+@click.argument("backtest_id")
+@click.option("--offset", type=int, default=0, show_default=True)
+@click.option("--error", "error_logs", is_flag=True, help="获取错误日志，而不是普通日志")
+@click.option("--all", "all_items", is_flag=True, help="自动分页拉取全部普通日志")
+@click.option("--max-pages", type=int, default=50, show_default=True)
+@click.pass_obj
+def logs(app: AppContext, backtest_id: str, offset: int, error_logs: bool, all_items: bool, max_pages: int) -> None:
+    client = make_optional_client(app)
+    try:
+        payload = get_backtest_logs(
+            client,
+            backtest_id,
+            offset=offset,
+            error=error_logs,
+            all_items=all_items,
+            max_pages=max_pages,
+        )
+    finally:
+        close_client(client)
+    if app.json_output:
+        write_json(payload)
+    else:
+        for line in payload.get("logs", []):
+            click.echo(str(line))
 
 
 @backtest_group.command("rm")

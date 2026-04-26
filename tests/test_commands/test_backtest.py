@@ -159,6 +159,127 @@ def test_backtest_show_json(monkeypatch, tmp_path):
     assert json.loads(result.output)["id"] == "bt1"
 
 
+def test_backtest_stats_json(monkeypatch, tmp_path):
+    monkeypatch.setattr("jqcli.commands.backtest.make_client", lambda app: object())
+    monkeypatch.setattr(
+        "jqcli.commands.backtest.get_backtest_stats",
+        lambda client, backtest_id: {"id": backtest_id, "metrics": {"annual_algo_return": 0.3}},
+    )
+
+    result = CliRunner().invoke(
+        main,
+        ["--config", str(tmp_path / "c.json"), "--token", "tok", "--format", "json", "backtest", "stats", "bt1"],
+    )
+
+    assert result.exit_code == 0
+    assert json.loads(result.output)["metrics"]["annual_algo_return"] == 0.3
+
+
+def test_backtest_result_json(monkeypatch, tmp_path):
+    captured = {}
+    monkeypatch.setattr("jqcli.commands.backtest.make_client", lambda app: object())
+
+    def fake_result(client, backtest_id, **kwargs):
+        captured["backtest_id"] = backtest_id
+        captured["kwargs"] = kwargs
+        return {"id": backtest_id, "data": {"state": "2"}}
+
+    monkeypatch.setattr("jqcli.commands.backtest.get_backtest_result", fake_result)
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "--config",
+            str(tmp_path / "c.json"),
+            "--token",
+            "tok",
+            "--format",
+            "json",
+            "backtest",
+            "result",
+            "bt1",
+            "--offset",
+            "10",
+            "--user-record-offset",
+            "2",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured == {"backtest_id": "bt1", "kwargs": {"offset": 10, "user_record_offset": 2}}
+    assert json.loads(result.output)["data"]["state"] == "2"
+
+
+def test_backtest_logs_json(monkeypatch, tmp_path):
+    captured = {}
+    monkeypatch.setattr("jqcli.commands.backtest.make_optional_client", lambda app: object())
+
+    def fake_logs(client, backtest_id, **kwargs):
+        captured["backtest_id"] = backtest_id
+        captured["kwargs"] = kwargs
+        return {"id": backtest_id, "kind": "log", "logs": ["line"]}
+
+    monkeypatch.setattr("jqcli.commands.backtest.get_backtest_logs", fake_logs)
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "--config",
+            str(tmp_path / "c.json"),
+            "--token",
+            "tok",
+            "--format",
+            "json",
+            "backtest",
+            "logs",
+            "bt1",
+            "--offset",
+            "10",
+            "--all",
+            "--max-pages",
+            "3",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured == {
+        "backtest_id": "bt1",
+        "kwargs": {"offset": 10, "error": False, "all_items": True, "max_pages": 3},
+    }
+    assert json.loads(result.output)["logs"] == ["line"]
+
+
+def test_backtest_error_logs_json(monkeypatch, tmp_path):
+    captured = {}
+    monkeypatch.setattr("jqcli.commands.backtest.make_optional_client", lambda app: object())
+
+    def fake_logs(client, backtest_id, **kwargs):
+        captured["kwargs"] = kwargs
+        return {"id": backtest_id, "kind": "error", "logs": ["Traceback"]}
+
+    monkeypatch.setattr("jqcli.commands.backtest.get_backtest_logs", fake_logs)
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "--config",
+            str(tmp_path / "c.json"),
+            "--token",
+            "tok",
+            "--format",
+            "json",
+            "backtest",
+            "logs",
+            "bt1",
+            "--error",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["kwargs"]["error"] is True
+    assert json.loads(result.output)["kind"] == "error"
+
+
 def test_backtest_rm_non_interactive_requires_yes(tmp_path):
     result = CliRunner().invoke(
         main,
@@ -241,10 +362,13 @@ def test_wait_for_backtest_reaches_done(monkeypatch):
     from jqcli.commands import backtest
 
     states = iter([
-        {"id": "bt1", "status": "running"},
-        {"id": "bt1", "status": "done"},
+        {"id": "bt1", "status": "running", "metrics": []},
+        {"id": "bt1", "status": "done", "metrics": {"annual_algo_return": 0.3, "sharpe": 1.2}},
     ])
     monkeypatch.setattr(backtest, "get_backtest", lambda client, backtest_id: next(states))
     monkeypatch.setattr(backtest.time, "sleep", lambda seconds: None)
 
-    assert backtest.wait_for_backtest(object(), "bt1", timeout=1, poll_interval=0)["status"] == "done"
+    payload = backtest.wait_for_backtest(object(), "bt1", timeout=1, poll_interval=0)
+
+    assert payload["status"] == "done"
+    assert payload["metrics"]["sharpe"] == 1.2

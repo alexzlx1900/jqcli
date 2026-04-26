@@ -7,10 +7,10 @@ from rich.console import Console
 from rich.table import Table
 
 from jqcli.api.client import ApiClient
-from jqcli.api.community import check_strategy_clone, clone_strategy, get_post_detail, list_latest_posts
+from jqcli.api.community import check_strategy_clone, clone_strategy, get_post_detail, iter_latest_posts, list_latest_posts
 from jqcli.cli import AppContext
 from jqcli.errors import NotAuthenticatedError
-from jqcli.output import write_json
+from jqcli.output import write_json, write_json_line
 
 
 @click.group(name="community")
@@ -58,6 +58,8 @@ def render_post_table(items: list[dict[str, Any]]) -> None:
 @click.option("--until", help="读取到该发布时间为止，支持 YYYY-MM-DD 或 YYYY-MM-DD HH:MM:SS")
 @click.option("--list-type", type=int, default=1, show_default=True, help="社区 listType，1 为文章")
 @click.option("--tags", default="", help="标签 ID，多个用逗号分隔")
+@click.option("--since-id", default="", help="遇到该文章 ID 后停止，用于增量拉取")
+@click.option("--stream", "stream_output", is_flag=True, help="逐条输出 NDJSON，适合长时间拉取")
 @click.pass_obj
 def latest(
     app: AppContext,
@@ -66,17 +68,33 @@ def latest(
     until: str | None,
     list_type: int,
     tags: str,
+    since_id: str,
+    stream_output: bool,
 ) -> None:
     client = make_client(app)
     try:
-        payload = list_latest_posts(
-            client,
-            page_size=page_size,
-            max_pages=max_pages,
-            until=until,
-            list_type=list_type,
-            tags=tags,
-        )
+        if stream_output:
+            for event in iter_latest_posts(
+                client,
+                page_size=page_size,
+                max_pages=max_pages,
+                until=until,
+                list_type=list_type,
+                tags=tags,
+                since_id=since_id or None,
+            ):
+                write_json_line(event)
+            return
+        else:
+            payload = list_latest_posts(
+                client,
+                page_size=page_size,
+                max_pages=max_pages,
+                until=until,
+                list_type=list_type,
+                tags=tags,
+                since_id=since_id or None,
+            )
     finally:
         close_client(client)
     if app.json_output:
@@ -90,8 +108,16 @@ def latest(
 @click.option("--reply-page", type=int, default=1, show_default=True, help="讨论区起始页")
 @click.option("--reply-pages", type=int, default=1, show_default=True, help="读取讨论区页数")
 @click.option("--all-replies", is_flag=True, help="读取全部讨论区页")
+@click.option("--with-backtest-stats", is_flag=True, help="同时读取文章策略回测的收益/风险指标")
 @click.pass_obj
-def detail(app: AppContext, post_id: str, reply_page: int, reply_pages: int, all_replies: bool) -> None:
+def detail(
+    app: AppContext,
+    post_id: str,
+    reply_page: int,
+    reply_pages: int,
+    all_replies: bool,
+    with_backtest_stats: bool,
+) -> None:
     client = make_client(app)
     try:
         payload = get_post_detail(
@@ -100,6 +126,7 @@ def detail(app: AppContext, post_id: str, reply_page: int, reply_pages: int, all
             reply_page=reply_page,
             reply_pages=reply_pages,
             all_replies=all_replies,
+            with_backtest_stats=with_backtest_stats,
         )
     finally:
         close_client(client)
@@ -112,6 +139,11 @@ def detail(app: AppContext, post_id: str, reply_page: int, reply_pages: int, all
         click.echo(f"作者: {(post.get('author') or {}).get('name', '')}")
         click.echo(f"发布时间: {post.get('published_at', '')}")
         click.echo(f"回测: {(post.get('backtest') or {}).get('name', '')} {(post.get('backtest') or {}).get('id', '')}")
+        backtest = (payload.get("strategy") or {}).get("backtest") if isinstance(payload.get("strategy"), dict) else {}
+        stats = backtest.get("stats") if isinstance(backtest, dict) and isinstance(backtest.get("stats"), dict) else {}
+        if stats:
+            click.echo(f"年化收益: {stats.get('annual_algo_return', '')}")
+            click.echo(f"最大回撤: {stats.get('max_drawdown', '')}")
         click.echo(f"讨论: {len(discussion.get('items', []))}/{discussion.get('total_count', '')}")
 
 

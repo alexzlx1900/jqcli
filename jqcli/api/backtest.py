@@ -106,7 +106,7 @@ def parse_backtest_list_html(html: str, *, strategy_id: str) -> dict[str, Any]:
                 "source_id": row.get("source_id", ""),
                 "strategy_id": strategy_id,
                 "name": cells[offset + 1] if len(cells) > offset + 1 else "",
-                "status": STATUS_MAP.get(raw_status, raw_status),
+                "status": _parse_status(raw_status, cells),
                 "start_date": start_date,
                 "end_date": end_date,
                 "capital": _parse_number(cells[offset + 4]) if len(cells) > offset + 4 else None,
@@ -139,6 +139,50 @@ def _parse_number(value: str) -> float | None:
         return float(value)
     except ValueError:
         return None
+
+
+def _parse_status(raw_status: str, cells: list[str]) -> str:
+    text = " ".join(cells)
+    if "完成" in text:
+        return "done"
+    if "失败" in text:
+        return "failed"
+    if "取消" in text:
+        return "cancelled"
+    if "运行" in text or "回测中" in text or "进行中" in text:
+        return "running"
+    return STATUS_MAP.get(raw_status, raw_status)
+
+
+def _metrics_have_core_stats(metrics: Any) -> bool:
+    return isinstance(metrics, dict) and metrics.get("annual_algo_return") is not None and metrics.get("sharpe") is not None
+
+
+def _metrics_have_any_stats(metrics: Any) -> bool:
+    if not isinstance(metrics, dict):
+        return False
+    return any(
+        metrics.get(key) is not None
+        for key in (
+            "annual_algo_return",
+            "algorithm_return",
+            "max_drawdown",
+            "sharpe",
+            "trading_days",
+        )
+    )
+
+
+def _fetch_stats(client: ApiClient, backtest_id: str) -> dict[str, Any]:
+    payload = client.get("/algorithm/backtest/stats", params={"backtestId": backtest_id})
+    return payload if isinstance(payload, dict) else {}
+
+
+def _parse_backtest_detail(client: ApiClient, backtest_id: str) -> _InputParser:
+    html = client.get_text("/algorithm/backtest/detail", params={"backtestId": backtest_id})
+    parser = _InputParser()
+    parser.feed(html)
+    return parser
 
 
 def run_backtest(
@@ -203,19 +247,114 @@ def list_backtests(
 
 
 def get_backtest(client: ApiClient, backtest_id: str) -> dict[str, Any]:
-    html = client.get_text("/algorithm/backtest/detail", params={"backtestId": backtest_id})
-    parser = _InputParser()
-    parser.feed(html)
-    source = client.get("/algorithm/backtest/source", params={"backtestId": parser.ids.get("backtestId", backtest_id)})
-    stats = client.get("/algorithm/backtest/stats", params={"backtestId": parser.ids.get("backtestId", backtest_id)})
+    parser = _parse_backtest_detail(client, backtest_id)
+    inner_backtest_id = parser.ids.get("backtestId", backtest_id)
+    source = client.get("/algorithm/backtest/source", params={"backtestId": inner_backtest_id})
+    stats = _fetch_stats(client, inner_backtest_id)
+    metrics = stats.get("data", stats) if isinstance(stats, dict) else {}
     return {
         "id": backtest_id,
-        "list_id": parser.ids.get("backtestId", ""),
+        "list_id": inner_backtest_id,
         "strategy_id": parser.ids.get("algorithmId", ""),
-        "status": "done",
+        "status": "done" if _metrics_have_core_stats(metrics) else "running",
         "start_date": parser.ids.get("startTime", ""),
         "code": source.get("data", {}).get("source", "") if isinstance(source, dict) else "",
-        "metrics": stats.get("data", stats) if isinstance(stats, dict) else {},
+        "metrics": metrics,
+    }
+
+
+def get_backtest_stats(client: ApiClient, backtest_id: str) -> dict[str, Any]:
+    payload = _fetch_stats(client, backtest_id)
+    metrics = payload.get("data", payload) if isinstance(payload, dict) else {}
+    resolved_id = backtest_id
+    if not _metrics_have_any_stats(metrics):
+        parser = _parse_backtest_detail(client, backtest_id)
+        inner_backtest_id = parser.ids.get("backtestId", "")
+        if inner_backtest_id and inner_backtest_id != backtest_id:
+            retry_payload = _fetch_stats(client, inner_backtest_id)
+            retry_metrics = retry_payload.get("data", retry_payload) if isinstance(retry_payload, dict) else {}
+            if _metrics_have_core_stats(retry_metrics):
+                payload = retry_payload
+                metrics = retry_metrics
+                resolved_id = inner_backtest_id
+    return {
+        "id": backtest_id,
+        "resolved_id": resolved_id,
+        "metrics": metrics,
+        "response": payload,
+    }
+
+
+def get_backtest_result(
+    client: ApiClient,
+    backtest_id: str,
+    *,
+    offset: int = 0,
+    user_record_offset: int = 0,
+) -> dict[str, Any]:
+    payload = client.get(
+        "/algorithm/backtest/result",
+        params={
+            "backtestId": backtest_id,
+            "offset": offset,
+            "userRecordOffset": user_record_offset,
+        },
+    )
+    data = payload.get("data", payload) if isinstance(payload, dict) else {}
+    return {
+        "id": backtest_id,
+        "offset": offset,
+        "user_record_offset": user_record_offset,
+        "data": data,
+        "response": payload,
+    }
+
+
+def get_backtest_logs(
+    client: ApiClient,
+    backtest_id: str,
+    *,
+    offset: int = 0,
+    error: bool = False,
+    all_items: bool = False,
+    max_pages: int = 50,
+) -> dict[str, Any]:
+    path = "/algorithm/backtest/error" if error else "/algorithm/backtest/log"
+    logs: list[str] = []
+    responses: list[dict[str, Any]] = []
+    current_offset = offset
+    state: Any = None
+    max_flag = False
+
+    for _ in range(max(1, max_pages)):
+        params: dict[str, Any] = {"backtestId": backtest_id}
+        if not error:
+            params["offset"] = current_offset
+        payload = client.get(path, params=params)
+        data = payload.get("data", payload) if isinstance(payload, dict) else {}
+        page_logs = data.get("logArr", []) if isinstance(data, dict) else []
+        if not isinstance(page_logs, list):
+            page_logs = []
+        logs.extend(str(item) for item in page_logs)
+        if isinstance(payload, dict):
+            responses.append(payload)
+        if isinstance(data, dict):
+            state = data.get("state", state)
+            max_flag = bool(data.get("max", max_flag))
+
+        if error or not all_items or not page_logs or max_flag:
+            break
+        current_offset += len(page_logs)
+
+    return {
+        "id": backtest_id,
+        "kind": "error" if error else "log",
+        "offset": offset,
+        "next_offset": offset + len(logs) if not error else None,
+        "state": state,
+        "max": max_flag,
+        "logs": logs,
+        "response": responses[-1] if len(responses) == 1 else responses,
     }
 
 

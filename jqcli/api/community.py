@@ -7,6 +7,7 @@ from urllib.parse import parse_qs, urlparse
 
 from jqcli.errors import ApiError, UsageError
 
+from .backtest import get_backtest_stats
 from .client import ApiClient
 
 
@@ -211,20 +212,73 @@ def list_latest_posts(
     until: str | None = None,
     list_type: int = 1,
     tags: str = "",
+    since_id: str | None = None,
+    all_pages: bool = False,
+    start_page: int = 1,
 ) -> dict[str, Any]:
+    items: list[dict[str, Any]] = []
+    done: dict[str, Any] = {}
+    for event in iter_latest_posts(
+        client,
+        page_size=page_size,
+        max_pages=max_pages,
+        until=until,
+        list_type=list_type,
+        tags=tags,
+        since_id=since_id,
+        all_pages=all_pages,
+        start_page=start_page,
+    ):
+        if event.get("type") == "post":
+            item = event.get("item")
+            if isinstance(item, dict):
+                items.append(item)
+        elif event.get("type") == "done":
+            done = event
+
+    return {
+        "items": items,
+        "page_size": page_size,
+        "pages_read": _int_or_zero(done.get("pages_read")),
+        "max_pages": done.get("max_pages"),
+        "until": until,
+        "since_id": since_id or "",
+        "stopped_by_until": bool(done.get("stopped_by_until")),
+        "stopped_by_since_id": bool(done.get("stopped_by_since_id")),
+        "total_count": done.get("total_count"),
+        "curr_time": str(done.get("curr_time", "")),
+    }
+
+
+def iter_latest_posts(
+    client: ApiClient,
+    *,
+    page_size: int = 50,
+    max_pages: int | None = None,
+    until: str | None = None,
+    list_type: int = 1,
+    tags: str = "",
+    since_id: str | None = None,
+    all_pages: bool = False,
+    start_page: int = 1,
+):
     if page_size <= 0:
         raise UsageError("--page-size 必须大于 0")
     if max_pages is not None and max_pages <= 0:
         raise UsageError("--max-pages 必须大于 0")
+    if start_page <= 0:
+        raise UsageError("start_page 必须大于 0")
 
     until_dt = parse_until(until)
-    effective_max_pages = max_pages if max_pages is not None else (None if until_dt is not None else 1)
+    effective_max_pages = max_pages if max_pages is not None else (None if until_dt is not None or all_pages else 1)
     cate = COMMUNITY_CATEGORY_TAG_IDS.get(list_type, str(list_type))
-    items: list[dict[str, Any]] = []
     total_count: int | None = None
     curr_time = ""
     stopped_by_until = False
-    page = 1
+    stopped_by_since_id = False
+    page = start_page
+    pages_read = 0
+    items_seen = 0
 
     while effective_max_pages is None or page <= effective_max_pages:
         payload = client.get(
@@ -246,31 +300,51 @@ def list_latest_posts(
         if not page_items:
             break
 
+        page_count = 0
         for raw in page_items:
             if not isinstance(raw, dict):
                 continue
             item = normalize_post(raw)
+            if since_id and item["id"] == since_id:
+                stopped_by_since_id = True
+                break
             published_at = parse_joinquant_time(item["published_at"])
             if until_dt is not None and published_at is not None and published_at < until_dt:
                 if item["is_top"]:
                     continue
                 stopped_by_until = True
                 break
-            items.append(item)
+            page_count += 1
+            items_seen += 1
+            yield {"type": "post", "page": page, "item": item}
 
-        if stopped_by_until:
+        pages_read += 1
+        yield {
+            "type": "progress",
+            "page": page,
+            "page_items": page_count,
+            "items_seen": items_seen,
+            "total_count": total_count,
+            "curr_time": curr_time,
+        }
+
+        if stopped_by_until or stopped_by_since_id:
             break
         page += 1
 
-    return {
-        "items": items,
+    yield {
+        "type": "done",
         "page_size": page_size,
-        "pages_read": page if stopped_by_until else page - 1,
+        "pages_read": pages_read,
         "max_pages": effective_max_pages,
+        "start_page": start_page,
         "until": until,
+        "since_id": since_id or "",
         "stopped_by_until": stopped_by_until,
+        "stopped_by_since_id": stopped_by_since_id,
         "total_count": total_count,
         "curr_time": curr_time,
+        "items_seen": items_seen,
     }
 
 
@@ -281,6 +355,7 @@ def get_post_detail(
     reply_page: int = 1,
     reply_pages: int | None = 1,
     all_replies: bool = False,
+    with_backtest_stats: bool = False,
 ) -> dict[str, Any]:
     if not post_id:
         raise UsageError("post_id 不能为空")
@@ -303,13 +378,18 @@ def get_post_detail(
         start_page=reply_page,
         max_pages=None if all_replies else reply_pages,
     )
+    strategy: dict[str, Any] = {
+        "backtest": dict(detail["backtest"]),
+        "research": detail["research"],
+        "file": detail["file"],
+    }
+    backtest_id = str(detail["backtest"].get("id", ""))
+    if with_backtest_stats and backtest_id:
+        strategy["backtest"]["stats"] = get_backtest_stats(client, backtest_id)["metrics"]
+
     return {
         "post": detail,
-        "strategy": {
-            "backtest": detail["backtest"],
-            "research": detail["research"],
-            "file": detail["file"],
-        },
+        "strategy": strategy,
         "discussion": discussion,
     }
 

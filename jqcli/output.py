@@ -15,6 +15,13 @@ def write_json(payload: Any, *, err: bool = False) -> None:
     stream.write(text + "\n")
 
 
+def write_json_line(payload: Any, *, err: bool = False) -> None:
+    text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    stream = sys.stderr if err else sys.stdout
+    stream.write(text + "\n")
+    stream.flush()
+
+
 def write_error(error: JqcliError, *, json_format: bool) -> None:
     if json_format:
         write_json(error_payload(error), err=True)
@@ -28,4 +35,3 @@ def mask_sensitive(value: str) -> str:
         if key in lowered:
             return "<redacted>"
     return value
-

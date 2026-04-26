@@ -6,6 +6,9 @@ from jqcli.api.backtest import (
     delete_backtest,
     delete_backtest_record,
     get_backtest,
+    get_backtest_logs,
+    get_backtest_result,
+    get_backtest_stats,
     list_backtests,
     parse_backtest_list_html,
     run_backtest,
@@ -146,6 +149,101 @@ def test_get_backtest():
     assert payload["code"] == "print(1)"
     assert payload["metrics"] == {"algorithm_return": 0.1}
     assert seen == ["/algorithm/backtest/detail", "/algorithm/backtest/source", "/algorithm/backtest/stats"]
+
+
+def test_get_backtest_stats():
+    def handler(request):
+        assert request.url.path == "/algorithm/backtest/stats"
+        assert request.url.params["backtestId"] == "bt1"
+        return httpx.Response(200, json={"data": {"annual_algo_return": 0.3, "sharpe": 1.2}})
+
+    payload = get_backtest_stats(client_with(handler), "bt1")
+
+    assert payload["id"] == "bt1"
+    assert payload["metrics"] == {"annual_algo_return": 0.3, "sharpe": 1.2}
+
+
+def test_get_backtest_stats_resolves_inner_id_when_report_is_not_ready_for_detail_id():
+    seen = []
+
+    def handler(request):
+        seen.append((request.url.path, str(request.url.params.get("backtestId", ""))))
+        if request.url.path == "/algorithm/backtest/stats" and request.url.params["backtestId"] == "detail-id":
+            return httpx.Response(200, json={"data": []})
+        if request.url.path == "/algorithm/backtest/detail":
+            return httpx.Response(200, text=BACKTEST_DETAIL_HTML)
+        if request.url.path == "/algorithm/backtest/stats" and request.url.params["backtestId"] == "source-id":
+            return httpx.Response(200, json={"data": {"annual_algo_return": 0.3, "sharpe": 1.2}})
+        raise AssertionError(request.url.path)
+
+    payload = get_backtest_stats(client_with(handler), "detail-id")
+
+    assert payload["resolved_id"] == "source-id"
+    assert payload["metrics"]["annual_algo_return"] == 0.3
+    assert seen == [
+        ("/algorithm/backtest/stats", "detail-id"),
+        ("/algorithm/backtest/detail", "detail-id"),
+        ("/algorithm/backtest/stats", "source-id"),
+    ]
+
+
+def test_get_backtest_result():
+    def handler(request):
+        assert request.url.path == "/algorithm/backtest/result"
+        assert request.url.params["backtestId"] == "bt1"
+        assert request.url.params["offset"] == "10"
+        assert request.url.params["userRecordOffset"] == "2"
+        return httpx.Response(200, json={"data": {"state": "2", "result": {"count": 1}}})
+
+    payload = get_backtest_result(client_with(handler), "bt1", offset=10, user_record_offset=2)
+
+    assert payload["id"] == "bt1"
+    assert payload["offset"] == 10
+    assert payload["user_record_offset"] == 2
+    assert payload["data"]["result"]["count"] == 1
+
+
+def test_get_backtest_logs_page():
+    def handler(request):
+        assert request.url.path == "/algorithm/backtest/log"
+        assert request.url.params["backtestId"] == "bt1"
+        assert request.url.params["offset"] == "10"
+        return httpx.Response(200, json={"data": {"state": "2", "logArr": ["a", "b"], "offset": 10, "max": False}})
+
+    payload = get_backtest_logs(client_with(handler), "bt1", offset=10)
+
+    assert payload["kind"] == "log"
+    assert payload["logs"] == ["a", "b"]
+    assert payload["next_offset"] == 12
+
+
+def test_get_backtest_logs_all_pages():
+    seen_offsets = []
+
+    def handler(request):
+        assert request.url.path == "/algorithm/backtest/log"
+        offset = int(request.url.params["offset"])
+        seen_offsets.append(offset)
+        logs = ["a", "b"] if offset == 0 else []
+        return httpx.Response(200, json={"data": {"state": "2", "logArr": logs, "offset": offset, "max": False}})
+
+    payload = get_backtest_logs(client_with(handler), "bt1", all_items=True)
+
+    assert payload["logs"] == ["a", "b"]
+    assert seen_offsets == [0, 2]
+
+
+def test_get_backtest_error_logs():
+    def handler(request):
+        assert request.url.path == "/algorithm/backtest/error"
+        assert request.url.params["backtestId"] == "bt1"
+        assert "offset" not in request.url.params
+        return httpx.Response(200, json={"data": {"state": "3", "logArr": ["Traceback"]}})
+
+    payload = get_backtest_logs(client_with(handler), "bt1", error=True)
+
+    assert payload["kind"] == "error"
+    assert payload["logs"] == ["Traceback"]
 
 
 def test_delete_backtest():

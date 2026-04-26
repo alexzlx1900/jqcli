@@ -468,7 +468,7 @@ jqcli --env-file .env --format json backtest ls <strategy_id> --compile
 }
 ```
 
-注意：聚宽列表页初始 HTML 中指标可能是 `--`，完整指标以 `backtest show` 调用详情统计接口为准。
+注意：聚宽列表页初始 HTML 中指标可能是 `--`，完整指标以 `backtest stats` 调用统计接口为准。
 
 ### backtest show
 
@@ -508,6 +508,66 @@ jqcli --env-file .env --format json backtest show <backtest_id>
   }
 }
 ```
+
+### backtest stats
+
+读取回测收益和风险指标。公开社区回测可不传登录态；私有回测仍需 `--env-file .env`。
+
+```bash
+jqcli --format json backtest stats <backtest_id>
+```
+
+真实接口：
+
+- `GET /algorithm/backtest/stats?backtestId=<backtest_id>`
+
+主要字段：
+
+- `algorithm_return`：策略收益
+- `benchmark_return`：基准收益
+- `annual_algo_return`：年化收益
+- `annual_bm_return`：基准年化收益
+- `max_drawdown`：最大回撤
+- `sharpe`、`sortino`、`information`、`alpha`、`beta`
+- `win_ratio`、`profit_loss_ratio`、`turnover_rate`
+
+### backtest result
+
+读取回测收益曲线数据。
+
+```bash
+jqcli --format json backtest result <backtest_id>
+jqcli --format json backtest result <backtest_id> --offset 0 --user-record-offset 0
+```
+
+真实接口：
+
+- `GET /algorithm/backtest/result?backtestId=<backtest_id>&offset=<offset>&userRecordOffset=<user_record_offset>`
+
+返回 `data.result.overallReturn`、`data.result.benchmark` 和可选 `data.userRecord`，用于绘制策略收益曲线、基准曲线和用户记录曲线。
+
+### backtest logs
+
+读取回测运行日志或错误日志，供自动调优流程定位编译错误、运行异常和策略输出。
+
+```bash
+jqcli --env-file .env --format json backtest logs <backtest_id>
+jqcli --env-file .env --format json backtest logs <backtest_id> --offset 100
+jqcli --env-file .env --format json backtest logs <backtest_id> --all
+jqcli --env-file .env --format json backtest logs <backtest_id> --error
+```
+
+真实接口：
+
+- 普通日志：`GET /algorithm/backtest/log?backtestId=<backtest_id>&offset=<offset>`
+- 错误日志：`GET /algorithm/backtest/error?backtestId=<backtest_id>`
+
+主要字段：
+
+- `logs`：日志行数组
+- `state`：回测状态
+- `next_offset`：下一页普通日志 offset
+- `max`：页面提示需导出完整日志时为 `true`
 
 ### backtest rm
 
@@ -603,6 +663,13 @@ jqcli --format json community latest --until 2026-04-25
 jqcli --format json community latest --until "2026-04-25 12:00:00"
 ```
 
+长时间拉取时逐条输出 NDJSON：
+
+```bash
+jqcli community latest --until 2026-04-25 --stream
+jqcli community latest --since-id <last_seen_post_id> --stream
+```
+
 参数：
 
 - `--page-size <n>`：每页条数，默认 `50`
@@ -610,12 +677,19 @@ jqcli --format json community latest --until "2026-04-25 12:00:00"
 - `--until <date|datetime>`：读取到该发布时间为止，支持 `YYYY-MM-DD` 或 `YYYY-MM-DD HH:MM:SS`
 - `--list-type <n>`：默认 `1`，当前用于文章分类
 - `--tags <ids>`：标签 ID，多个用逗号分隔
+- `--since-id <post_id>`：遇到指定文章 ID 后停止，适合外部保存上次处理到的游标
+- `--stream`：逐条输出 NDJSON；不传时仍保持兼容，一次性返回包含 `items` 的 JSON 或表格
 
 置顶帖处理：
 
 - 聚宽最新发帖接口会把置顶帖放在列表前面，即使置顶帖的发布时间很早。
 - 使用 `--until` 时，`jqcli` 会跳过早于截止时间的置顶帖，但不会因为置顶帖而停止翻页。
 - 只有遇到早于截止时间的非置顶文章时，才认为已经读取到截止位置并停止。
+
+输出模式：
+
+- 默认模式：逐页拉取后在内存中聚合为 `items`，命令结束时一次性输出完整 JSON 或表格。
+- `--stream` 模式：每行输出一个 JSON 对象并立即 flush，包含 `post`、`progress` 和 `done` 事件，适合重定向到 `.jsonl` 文件或管道消费。
 
 输出：
 
@@ -669,10 +743,20 @@ jqcli --format json community latest --until "2026-04-25 12:00:00"
   "pages_read": 1,
   "max_pages": 1,
   "until": null,
+  "since_id": "",
   "stopped_by_until": false,
+  "stopped_by_since_id": false,
   "total_count": 33894,
   "curr_time": "2026-04-25 21:39:18"
 }
+```
+
+`--stream` 输出示例：
+
+```jsonl
+{"type":"post","page":1,"item":{"id":"990cd272a9801944845af14b1632b9ad","title":"红利低波ETF RSI择时策略-年化21回撤13"}}
+{"type":"progress","page":1,"page_items":50,"items_seen":50,"total_count":33894,"curr_time":"2026-04-25 21:39:18"}
+{"type":"done","page_size":50,"pages_read":1,"max_pages":1,"until":null,"since_id":"","stopped_by_until":false,"stopped_by_since_id":false,"total_count":33894,"curr_time":"2026-04-25 21:39:18","items_seen":50}
 ```
 
 文章附加信息字段：
@@ -684,6 +768,121 @@ jqcli --format json community latest --until "2026-04-25 12:00:00"
 - `research.notebook_report`：研究报告 HTML 路径
 - `research.notebook_clone_count`：研究克隆次数
 - `file.*`：文章附件 key、文件名、类型和下载次数
+
+### archive community posts
+
+批量归档聚宽社区帖子，支持统一增量同步，也保留旧的列表/回测两阶段模式。
+
+推荐使用统一增量归档：
+
+```bash
+.venv/bin/python scripts/archive_community_posts.py \
+  --phase sync \
+  --store data/community_posts_archive.jsonl \
+  --state data/community_posts_archive.state.json
+```
+
+`sync` 模式会把列表、详情和回测信息合并到同一个 canonical JSONL。每次运行时：
+
+1. 先读取已有 `--store`。
+2. 如指定 `--seed`，或发现旧输出文件，会先把旧数据一次性导入并去重。
+3. 从社区列表第一页开始增量抓取，直到遇到本地已有数据的最新发布时间。
+4. 对缺失详情的帖子调用 `/community/post/detailV2` 补齐正文和详情字段。
+5. 对缺失 `backtest.stats` 的帖子调用 `/algorithm/backtest/stats` 补齐核心回测指标。
+
+复用旧脚本已抓取数据：
+
+```bash
+.venv/bin/python scripts/archive_community_posts.py \
+  --phase sync \
+  --store data/community_posts_archive.jsonl \
+  --seed data/community_posts_until_20200101.enriched.jsonl
+```
+
+限制单次补齐量，适合试跑或分批补详情：
+
+```bash
+.venv/bin/python scripts/archive_community_posts.py \
+  --phase sync \
+  --store data/community_posts_archive.jsonl \
+  --max-detail 500 \
+  --max-backtest 500
+```
+
+统一归档每行是一篇帖子，去掉 `post/detail/strategy` 这类重复嵌套，保留完整非重复信息：
+
+- 基础字段：`id`、`internal_post_id`、`title`、`url`
+- 正文：`content`，以及列表摘要 `content_preview`
+- 作者：`author`
+- 时间：`published_at`、`updated_at`、`last_active_at`、`last_reply_at`、`last_reply_id`
+- 计数和状态：`reply_count`、`view_count`、`like_count`、`dislike_count`、`collection_count`、`is_top`、`is_best`、`is_rich`、`is_worth`
+- 分类和元信息：`tags`、`type`、`status`、`ip_address`、`bounty`
+- 策略回测：`backtest.id`、`backtest.name`、`backtest.clone_count`、`backtest.pic_url`、`backtest.stats`
+- 研究和附件：`research.*`、`file.*`
+- 抓取元信息：`list_fetched_at`、`detail_fetched_at`
+
+旧的两阶段模式仍可使用：
+
+```bash
+# 1. 只抓列表信息，持续翻页直到空页、--until 或 --max-pages
+.venv/bin/python scripts/archive_community_posts.py \
+  --phase list \
+  --list-out data/community_posts.list.jsonl \
+  --until 2020-01-01
+
+# 2. 从列表 JSONL 读取帖子，再补全 backtest.stats
+.venv/bin/python scripts/archive_community_posts.py \
+  --phase enrich \
+  --list-out data/community_posts.list.jsonl \
+  --enriched-out data/community_posts.enriched.jsonl \
+  --backtest-workers 4
+```
+
+默认 `--phase all` 会先抓列表，再补全回测信息。列表阶段只使用 `/community/post/listV2`，不会抓正文详情和回复；补全阶段只对有 `backtest.id` 的帖子调用 `/algorithm/backtest/stats`。
+
+列表 JSONL 每行是一篇帖子，保留核心字段：
+
+- `id`、`title`、`url`
+- `author`
+- `published_at`、`updated_at`、`last_active_at`、`last_reply_at`
+- `reply_count`、`view_count`、`like_count`、`collection_count`
+- `tags`、`content_preview`
+- `backtest.id`、`backtest.clone_count`、`backtest.pic_url`
+- `research.*`、`file.*`
+
+补全后的 JSONL 会在 `backtest.stats` 下追加核心指标：
+
+- `algorithm_return`、`benchmark_return`
+- `annual_algo_return`、`annual_bm_return`
+- `max_drawdown`、`max_drawdown_period`
+- `sharpe`、`sortino`、`information`
+- `alpha`、`beta`
+- `algorithm_volatility`、`benchmark_volatility`
+- `win_ratio`、`profit_loss_ratio`、`turnover_rate`、`trading_days`
+
+断点和去重：
+
+- 默认开启 `--resume`。
+- 列表阶段会读取已存在的 list JSONL，跳过已写入的 `id`。
+- 状态文件记录 `last_page`，续跑时从下一页继续。
+- 补全阶段会读取已存在的 enriched JSONL，跳过已补全的 `id`。
+- 传 `--force` 会删除本阶段输出文件后重跑。
+
+常用参数：
+
+- `--store <path>`：统一归档 JSONL，默认 `data/community_posts_archive.jsonl`
+- `--seed <path>`：导入旧 JSONL，可传多次
+- `--page-size <n>`：列表接口每页条数，默认 `50`
+- `--until <date|datetime>`：抓到该发布时间以前停止
+- `--max-pages <n>`：最多抓到指定页
+- `--page-sleep <seconds>`：列表翻页间隔
+- `--backtest-workers <n>`：回测 stats 并发数，默认 `4`
+- `--detail-workers <n>`：文章详情并发数，默认 `4`
+- `--skip-detail`：不补文章详情
+- `--skip-backtest`：不补回测 stats
+- `--max-detail <n>`：本次最多补齐多少条详情
+- `--max-backtest <n>`：本次最多补齐多少条回测 stats
+- `--retries <n>`：stats 请求失败重试次数，默认 `2`
 
 ### community detail
 
@@ -698,6 +897,7 @@ jqcli --format json community detail <post_id>
 ```bash
 jqcli --format json community detail <post_id> --reply-pages 3
 jqcli --format json community detail <post_id> --all-replies
+jqcli --format json community detail <post_id> --with-backtest-stats
 ```
 
 参数：
@@ -706,11 +906,13 @@ jqcli --format json community detail <post_id> --all-replies
 - `--reply-page <n>`：讨论区起始页，默认 `1`
 - `--reply-pages <n>`：读取讨论区页数，默认 `1`
 - `--all-replies`：读取全部讨论区页；聚宽讨论区每页 20 条
+- `--with-backtest-stats`：文章带策略回测时，额外读取收益/风险指标并放入 `strategy.backtest.stats`
 
 真实接口：
 
 - 文章详情：`GET /community/post/detailV2?postId=<post_id>`
 - 讨论区：`GET /community/post/replyList?postId=<post_id>&page=<page>`
+- 回测指标：`GET /algorithm/backtest/stats?backtestId=<backtest_id>`，仅传 `--with-backtest-stats` 时请求
 - 展开子回复时，聚宽前端同样使用 `replyList`，参数增加 `oReplyId=<reply_id>`；当前详情输出包含接口已随主回复返回的子回复和剩余数量。
 
 输出：

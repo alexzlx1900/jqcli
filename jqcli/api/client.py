@@ -25,6 +25,12 @@ class ApiClient:
     def close(self) -> None:
         self._client.close()
 
+    def __enter__(self) -> ApiClient:
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        self.close()
+
     def _headers(self) -> dict[str, str]:
         headers: dict[str, str] = {"X-Requested-With": "XMLHttpRequest"}
         if self.token:

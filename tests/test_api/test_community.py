@@ -4,7 +4,14 @@ import httpx
 import pytest
 
 from jqcli.api.client import ApiClient
-from jqcli.api.community import check_strategy_clone, clone_strategy, get_post_detail, list_latest_posts, parse_until
+from jqcli.api.community import (
+    check_strategy_clone,
+    clone_strategy,
+    get_post_detail,
+    iter_latest_posts,
+    list_latest_posts,
+    parse_until,
+)
 from jqcli.errors import UsageError
 
 
@@ -109,6 +116,38 @@ def test_list_latest_posts_reads_max_pages():
     assert pages == [1, 2, 3]
     assert [item["id"] for item in payload["items"]] == ["p1", "p2", "p3"]
     assert payload["pages_read"] == 3
+
+
+def test_iter_latest_posts_streams_post_progress_and_done():
+    def handler(request):
+        page = int(parse_qs(request.url.query.decode())["page"][0])
+        return response_for([post(f"p{page}", f"2026-04-2{page} 10:00:00")])
+
+    events = list(iter_latest_posts(client_with(handler), max_pages=2))
+
+    assert [event["type"] for event in events] == ["post", "progress", "post", "progress", "done"]
+    assert events[0]["item"]["id"] == "p1"
+    assert events[1]["page"] == 1
+    assert events[-1]["items_seen"] == 2
+    assert events[-1]["pages_read"] == 2
+
+
+def test_list_latest_posts_stops_at_since_id():
+    def handler(request):
+        page = int(parse_qs(request.url.query.decode())["page"][0])
+        if page == 1:
+            return response_for([
+                post("p-new", "2026-04-25 10:00:00"),
+                post("p-seen", "2026-04-24 10:00:00"),
+                post("p-old", "2026-04-23 10:00:00"),
+            ])
+        return response_for([post("p2", "2026-04-22 10:00:00")])
+
+    payload = list_latest_posts(client_with(handler), since_id="p-seen", max_pages=3)
+
+    assert [item["id"] for item in payload["items"]] == ["p-new"]
+    assert payload["pages_read"] == 1
+    assert payload["stopped_by_since_id"] is True
 
 
 def test_list_latest_posts_until_ignores_old_top_for_stop():
@@ -236,6 +275,38 @@ def test_get_post_detail_includes_strategy_and_discussion():
     assert payload["discussion"]["items"][0]["backtest"]["id"] == "rbt"
     assert payload["discussion"]["items"][0]["sub_replies"][0]["id"] == "sr1"
     assert payload["discussion"]["items"][0]["sub_reply_remaining_count"] == 2
+
+
+def test_get_post_detail_can_include_backtest_stats():
+    seen = []
+
+    def handler(request):
+        seen.append(request.url.path)
+        if request.url.path == "/community/post/detailV2":
+            return httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "postId": "p1",
+                        "title": "详情标题",
+                        "backtestId": "bt1",
+                        "backtestName": "策略回测",
+                    },
+                    "code": "00000",
+                },
+            )
+        if request.url.path == "/community/post/replyList":
+            return httpx.Response(200, json={"data": {"replyArr": [], "totalCount": "0"}, "code": "00000"})
+        if request.url.path == "/algorithm/backtest/stats":
+            assert request.url.params["backtestId"] == "bt1"
+            return httpx.Response(200, json={"data": {"annual_algo_return": 0.3}, "code": "00000"})
+        raise AssertionError(request.url.path)
+
+    payload = get_post_detail(client_with(handler), "p1", with_backtest_stats=True)
+
+    assert seen == ["/community/post/detailV2", "/community/post/replyList", "/algorithm/backtest/stats"]
+    assert payload["post"]["backtest"] == {"id": "bt1", "name": "策略回测", "clone_count": 0}
+    assert payload["strategy"]["backtest"]["stats"] == {"annual_algo_return": 0.3}
 
 
 def test_get_post_detail_reads_all_reply_pages():
