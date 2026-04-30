@@ -24,6 +24,7 @@ from jqcli.output import write_json
 
 
 TERMINAL_STATUSES = {"done", "failed", "cancelled"}
+RESULT_STATE_STATUSES = {"0": "running", "1": "failed", "2": "done", "3": "cancelled"}
 
 
 @click.group(name="backtest")
@@ -69,12 +70,100 @@ def has_core_metrics(payload: dict[str, Any]) -> bool:
     return isinstance(metrics, dict) and metrics.get("annual_algo_return") is not None and metrics.get("sharpe") is not None
 
 
-def wait_for_backtest(client: ApiClient, backtest_id: str, *, timeout: float, poll_interval: float) -> dict[str, Any]:
+def result_status(payload: dict[str, Any]) -> str:
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return ""
+    state = data.get("state")
+    return RESULT_STATE_STATUSES.get(str(state), "")
+
+
+def find_backtest_list_item(
+    client: ApiClient,
+    backtest_id: str,
+    *,
+    strategy_id: str | None,
+    compile_only: bool,
+) -> dict[str, Any] | None:
+    if not strategy_id:
+        return None
+    payload = list_backtests(
+        client,
+        strategy_id=strategy_id,
+        all_items=True,
+        compile_only=compile_only,
+    )
+    for item in payload.get("items", []):
+        if backtest_id in {str(item.get("id", "")), str(item.get("list_id", "")), str(item.get("source_id", ""))}:
+            return item
+    return None
+
+
+def _stats_payload(backtest_id: str, stats_payload: dict[str, Any], *, status: str = "running") -> dict[str, Any]:
+    return {
+        "id": backtest_id,
+        "resolved_id": stats_payload.get("resolved_id", backtest_id),
+        "status": "done" if has_core_metrics(stats_payload) else status,
+        "metrics": stats_payload.get("metrics"),
+    }
+
+
+def wait_for_backtest(
+    client: ApiClient,
+    backtest_id: str,
+    *,
+    timeout: float,
+    poll_interval: float,
+    strategy_id: str | None = None,
+    compile_only: bool = False,
+) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
+    last_payload: dict[str, Any] | None = None
     while True:
-        payload = get_backtest(client, backtest_id)
-        if has_core_metrics(payload):
-            return payload
+        stats_payload = get_backtest_stats(client, backtest_id)
+        metrics = stats_payload.get("metrics")
+        if isinstance(metrics, dict) and metrics:
+            payload = _stats_payload(backtest_id, stats_payload)
+            last_payload = payload
+            if has_core_metrics(payload):
+                return payload
+        else:
+            payload = get_backtest(client, backtest_id)
+            last_payload = payload
+            if has_core_metrics(payload):
+                return payload
+        list_item = find_backtest_list_item(
+            client,
+            backtest_id,
+            strategy_id=strategy_id,
+            compile_only=compile_only,
+        )
+        if list_item:
+            list_status = str(list_item.get("status", ""))
+            resolved_id = str(list_item.get("id") or list_item.get("source_id") or backtest_id)
+            last_payload = {
+                **(last_payload or {"id": backtest_id}),
+                "resolved_id": resolved_id,
+                "status": list_status or last_payload.get("status", "running"),
+                "list_item": list_item,
+            }
+            if list_status == "done":
+                resolved_stats_payload = get_backtest_stats(client, resolved_id)
+                payload = _stats_payload(backtest_id, resolved_stats_payload, status="done")
+                payload["list_item"] = list_item
+                last_payload = payload
+                if has_core_metrics(payload):
+                    return payload
+            elif list_status in {"failed", "cancelled"}:
+                return last_payload
+        result_payload = get_backtest_result(client, backtest_id)
+        status = result_status(result_payload)
+        if status:
+            last_payload = {
+                **(last_payload or {"id": backtest_id}),
+                "result_status": status,
+                "result": result_payload.get("data", {}),
+            }
         if time.monotonic() >= deadline:
             raise TimeoutError()
         time.sleep(poll_interval)
@@ -88,6 +177,7 @@ def wait_for_backtest(client: ApiClient, backtest_id: str, *, timeout: float, po
 @click.option("--freq", "frequency", type=click.Choice(["day", "minute"]), default="day")
 @click.option("--compile", "compile_only", is_flag=True, help="只做编译运行，不进入正式回测列表")
 @click.option("--wait", "wait_result", is_flag=True)
+@click.option("--wait-timeout", type=float, default=600, show_default=True, help="等待回测完成的最长秒数")
 @click.option("--poll-interval", type=float, default=5)
 @click.pass_obj
 def run(
@@ -99,6 +189,7 @@ def run(
     frequency: str,
     compile_only: bool,
     wait_result: bool,
+    wait_timeout: float,
     poll_interval: float,
 ) -> None:
     if end_date is None:
@@ -115,7 +206,14 @@ def run(
             compile_only=compile_only,
         )
         if wait_result:
-            payload = wait_for_backtest(client, str(payload["id"]), timeout=app.timeout, poll_interval=poll_interval)
+            payload = wait_for_backtest(
+                client,
+                str(payload["id"]),
+                timeout=wait_timeout,
+                poll_interval=poll_interval,
+                strategy_id=strategy_id,
+                compile_only=compile_only,
+            )
     finally:
         close_client(client)
     if app.json_output:

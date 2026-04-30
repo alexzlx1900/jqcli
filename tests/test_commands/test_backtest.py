@@ -78,7 +78,7 @@ def test_backtest_run_wait(monkeypatch, tmp_path):
     monkeypatch.setattr("jqcli.commands.backtest.run_backtest", lambda client, **kwargs: {"id": "bt1", "status": "running"})
     monkeypatch.setattr(
         "jqcli.commands.backtest.wait_for_backtest",
-        lambda client, backtest_id, timeout, poll_interval: {"id": backtest_id, "status": "done"},
+        lambda client, backtest_id, timeout, poll_interval, **kwargs: {"id": backtest_id, "status": "done"},
     )
 
     result = CliRunner().invoke(
@@ -361,14 +361,103 @@ def test_backtest_rm_compile_flag(monkeypatch, tmp_path):
 def test_wait_for_backtest_reaches_done(monkeypatch):
     from jqcli.commands import backtest
 
-    states = iter([
-        {"id": "bt1", "status": "running", "metrics": []},
-        {"id": "bt1", "status": "done", "metrics": {"annual_algo_return": 0.3, "sharpe": 1.2}},
+    result_states = iter([
+        {"id": "bt1", "data": {"state": "0"}},
     ])
-    monkeypatch.setattr(backtest, "get_backtest", lambda client, backtest_id: next(states))
+    states = iter([
+        {"id": "bt1", "resolved_id": "bt1", "metrics": []},
+        {"id": "bt1", "resolved_id": "bt1", "metrics": {"annual_algo_return": 0.3, "sharpe": 1.2}},
+    ])
+    monkeypatch.setattr(backtest, "get_backtest_stats", lambda client, backtest_id: next(states))
+    monkeypatch.setattr(backtest, "get_backtest", lambda client, backtest_id: {"id": backtest_id, "status": "running"})
+    monkeypatch.setattr(backtest, "get_backtest_result", lambda client, backtest_id: next(result_states))
     monkeypatch.setattr(backtest.time, "sleep", lambda seconds: None)
 
     payload = backtest.wait_for_backtest(object(), "bt1", timeout=1, poll_interval=0)
 
     assert payload["status"] == "done"
+    assert payload["metrics"]["sharpe"] == 1.2
+
+
+def test_wait_for_backtest_returns_failed_state(monkeypatch):
+    from jqcli.commands import backtest
+
+    monkeypatch.setattr(backtest, "get_backtest_stats", lambda client, backtest_id: {"id": backtest_id, "metrics": []})
+    monkeypatch.setattr(backtest, "get_backtest", lambda client, backtest_id: {"id": backtest_id, "status": "running"})
+    monkeypatch.setattr(
+        backtest,
+        "find_backtest_list_item",
+        lambda client, backtest_id, strategy_id, compile_only: {"id": backtest_id, "status": "failed"},
+    )
+    monkeypatch.setattr(
+        backtest,
+        "get_backtest_result",
+        lambda client, backtest_id: {"id": backtest_id, "data": {"state": "1", "message": "failed"}},
+    )
+    monkeypatch.setattr(backtest.time, "sleep", lambda seconds: None)
+
+    payload = backtest.wait_for_backtest(object(), "bt1", timeout=60, poll_interval=5)
+
+    assert payload["status"] == "failed"
+
+
+def test_wait_for_backtest_returns_cancelled_state(monkeypatch):
+    from jqcli.commands import backtest
+
+    monkeypatch.setattr(backtest, "get_backtest_stats", lambda client, backtest_id: {"id": backtest_id, "metrics": {}})
+    monkeypatch.setattr(backtest, "get_backtest", lambda client, backtest_id: {"id": backtest_id, "status": "running"})
+    monkeypatch.setattr(
+        backtest,
+        "find_backtest_list_item",
+        lambda client, backtest_id, strategy_id, compile_only: {"id": backtest_id, "status": "cancelled"},
+    )
+    monkeypatch.setattr(
+        backtest,
+        "get_backtest_result",
+        lambda client, backtest_id: {"id": backtest_id, "data": {"state": 3}},
+    )
+    monkeypatch.setattr(backtest.time, "sleep", lambda seconds: None)
+
+    payload = backtest.wait_for_backtest(object(), "bt1", timeout=60, poll_interval=5)
+
+    assert payload["status"] == "cancelled"
+
+
+def test_wait_for_backtest_ignores_early_failed_result_state_when_list_is_running(monkeypatch):
+    from jqcli.commands import backtest
+
+    list_items = iter([
+        {"id": "detail-id", "list_id": "list-id", "status": "running"},
+        {"id": "detail-id", "list_id": "list-id", "status": "done"},
+    ])
+
+    def fake_stats(client, backtest_id):
+        if backtest_id == "detail-id":
+            return {"id": backtest_id, "resolved_id": backtest_id, "metrics": {"annual_algo_return": 0.3, "sharpe": 1.2}}
+        return {"id": backtest_id, "metrics": []}
+
+    monkeypatch.setattr(backtest, "get_backtest_stats", fake_stats)
+    monkeypatch.setattr(backtest, "get_backtest", lambda client, backtest_id: {"id": backtest_id, "status": "running"})
+    monkeypatch.setattr(
+        backtest,
+        "find_backtest_list_item",
+        lambda client, backtest_id, strategy_id, compile_only: next(list_items),
+    )
+    monkeypatch.setattr(
+        backtest,
+        "get_backtest_result",
+        lambda client, backtest_id: {"id": backtest_id, "data": {"state": "1", "result": {"count": 0}}},
+    )
+    monkeypatch.setattr(backtest.time, "sleep", lambda seconds: None)
+
+    payload = backtest.wait_for_backtest(
+        object(),
+        "list-id",
+        timeout=60,
+        poll_interval=5,
+        strategy_id="s1",
+    )
+
+    assert payload["status"] == "done"
+    assert payload["resolved_id"] == "detail-id"
     assert payload["metrics"]["sharpe"] == 1.2
