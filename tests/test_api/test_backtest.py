@@ -1,6 +1,7 @@
 from urllib.parse import parse_qs
 
 import httpx
+import pytest
 
 from jqcli.api.backtest import (
     delete_backtest,
@@ -14,6 +15,7 @@ from jqcli.api.backtest import (
     run_backtest,
 )
 from jqcli.api.client import ApiClient
+from jqcli.errors import ApiError
 
 
 def client_with(handler):
@@ -110,6 +112,37 @@ def test_run_backtest_compile_mode_sets_type_one():
     )
 
     assert payload["mode"] == "compile"
+
+
+def test_run_backtest_use_credit_sets_field():
+    def handler(request):
+        if request.url.path == "/algorithm/index/edit":
+            return httpx.Response(200, text=STRATEGY_EDIT_HTML)
+        form = parse_qs(request.content.decode())
+        assert form["useCredit"] == ["1"]
+        return httpx.Response(200, json={"data": {"backtestId_": "bt1", "backtestId": "list-bt1"}})
+
+    payload = run_backtest(
+        client_with(handler),
+        strategy_id="s1",
+        start_date="2023-01-01",
+        use_credit=True,
+    )
+
+    assert payload["id"] == "bt1"
+
+
+def test_run_backtest_build_error_raises_clear_message():
+    def handler(request):
+        if request.url.path == "/algorithm/index/edit":
+            return httpx.Response(200, text=STRATEGY_EDIT_HTML)
+        return httpx.Response(200, json={"data": None, "status": "2", "code": "20000", "msg": "50000"})
+
+    with pytest.raises(ApiError) as exc:
+        run_backtest(client_with(handler), strategy_id="s1", start_date="2023-01-01")
+
+    assert "免费回测时间不足" in exc.value.message
+    assert exc.value.details["response"]["msg"] == "50000"
 
 
 def test_list_backtests_query():

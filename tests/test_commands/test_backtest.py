@@ -37,6 +37,7 @@ def test_backtest_run_json(monkeypatch, tmp_path):
     assert result.exit_code == 0
     assert captured["strategy_id"] == "s1"
     assert captured["compile_only"] is False
+    assert captured["use_credit"] is False
     assert json.loads(result.output)["id"] == "bt1"
 
 
@@ -71,6 +72,38 @@ def test_backtest_run_compile_flag(monkeypatch, tmp_path):
     assert result.exit_code == 0
     assert captured["compile_only"] is True
     assert json.loads(result.output)["mode"] == "compile"
+
+
+def test_backtest_run_use_credit_flag(monkeypatch, tmp_path):
+    captured = {}
+    monkeypatch.setattr("jqcli.commands.backtest.make_client", lambda app: object())
+
+    def fake_run(client, **kwargs):
+        captured.update(kwargs)
+        return {"id": "bt1", "status": "running"}
+
+    monkeypatch.setattr("jqcli.commands.backtest.run_backtest", fake_run)
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "--config",
+            str(tmp_path / "c.json"),
+            "--token",
+            "tok",
+            "--format",
+            "json",
+            "backtest",
+            "run",
+            "s1",
+            "--start",
+            "2023-01-01",
+            "--use-credit",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["use_credit"] is True
 
 
 def test_backtest_run_wait(monkeypatch, tmp_path):
@@ -394,11 +427,17 @@ def test_wait_for_backtest_returns_failed_state(monkeypatch):
         "get_backtest_result",
         lambda client, backtest_id: {"id": backtest_id, "data": {"state": "1", "message": "failed"}},
     )
+    monkeypatch.setattr(
+        backtest,
+        "get_backtest_logs",
+        lambda client, backtest_id, error=False: {"id": backtest_id, "kind": "error", "logs": ["Traceback"]},
+    )
     monkeypatch.setattr(backtest.time, "sleep", lambda seconds: None)
 
     payload = backtest.wait_for_backtest(object(), "bt1", timeout=60, poll_interval=5)
 
     assert payload["status"] == "failed"
+    assert payload["error_logs"] == ["Traceback"]
 
 
 def test_wait_for_backtest_returns_cancelled_state(monkeypatch):
@@ -416,11 +455,128 @@ def test_wait_for_backtest_returns_cancelled_state(monkeypatch):
         "get_backtest_result",
         lambda client, backtest_id: {"id": backtest_id, "data": {"state": 3}},
     )
+    monkeypatch.setattr(
+        backtest,
+        "get_backtest_logs",
+        lambda client, backtest_id, error=False: {"id": backtest_id, "kind": "error", "logs": []},
+    )
     monkeypatch.setattr(backtest.time, "sleep", lambda seconds: None)
 
     payload = backtest.wait_for_backtest(object(), "bt1", timeout=60, poll_interval=5)
 
     assert payload["status"] == "cancelled"
+    assert payload["error_logs"] == []
+
+
+def test_wait_for_backtest_treats_cancelled_with_error_logs_as_failed(monkeypatch):
+    from jqcli.commands import backtest
+
+    monkeypatch.setattr(backtest, "get_backtest_stats", lambda client, backtest_id: {"id": backtest_id, "metrics": {}})
+    monkeypatch.setattr(backtest, "get_backtest", lambda client, backtest_id: {"id": backtest_id, "status": "running"})
+    monkeypatch.setattr(
+        backtest,
+        "find_backtest_list_item",
+        lambda client, backtest_id, strategy_id, compile_only: None,
+    )
+    monkeypatch.setattr(
+        backtest,
+        "get_backtest_result",
+        lambda client, backtest_id: {"id": backtest_id, "data": {"state": 3}},
+    )
+    monkeypatch.setattr(
+        backtest,
+        "get_backtest_logs",
+        lambda client, backtest_id, error=False: {"id": backtest_id, "kind": "error", "logs": ["Traceback"]},
+    )
+    monkeypatch.setattr(backtest.time, "sleep", lambda seconds: None)
+
+    payload = backtest.wait_for_backtest(object(), "bt1", timeout=60, poll_interval=5)
+
+    assert payload["status"] == "failed"
+    assert payload["result_status"] == "failed"
+    assert payload["error_logs"] == ["Traceback"]
+
+
+def test_wait_for_backtest_returns_failed_result_state_without_list_item(monkeypatch):
+    from jqcli.commands import backtest
+
+    monkeypatch.setattr(backtest, "get_backtest_stats", lambda client, backtest_id: {"id": backtest_id, "metrics": {}})
+    monkeypatch.setattr(backtest, "get_backtest", lambda client, backtest_id: {"id": backtest_id, "status": "running"})
+    monkeypatch.setattr(
+        backtest,
+        "find_backtest_list_item",
+        lambda client, backtest_id, strategy_id, compile_only: None,
+    )
+    monkeypatch.setattr(
+        backtest,
+        "get_backtest_result",
+        lambda client, backtest_id: {"id": backtest_id, "data": {"state": "1", "message": "failed"}},
+    )
+    monkeypatch.setattr(
+        backtest,
+        "get_backtest_logs",
+        lambda client, backtest_id, error=False: {"id": backtest_id, "kind": "error", "logs": ["NameError"]},
+    )
+    monkeypatch.setattr(backtest.time, "sleep", lambda seconds: None)
+
+    payload = backtest.wait_for_backtest(object(), "bt1", timeout=60, poll_interval=5)
+
+    assert payload["status"] == "failed"
+    assert payload["result_status"] == "failed"
+    assert payload["error_logs"] == ["NameError"]
+
+
+def test_wait_for_backtest_returns_done_list_state_before_stats_core(monkeypatch):
+    from jqcli.commands import backtest
+
+    monkeypatch.setattr(backtest, "get_backtest_stats", lambda client, backtest_id: {"id": backtest_id, "metrics": {"report_done_seconds": 1}})
+    monkeypatch.setattr(backtest, "get_backtest", lambda client, backtest_id: {"id": backtest_id, "status": "running"})
+    monkeypatch.setattr(
+        backtest,
+        "find_backtest_list_item",
+        lambda client, backtest_id, strategy_id, compile_only: {"id": "detail-id", "status": "done"},
+    )
+    monkeypatch.setattr(
+        backtest,
+        "get_backtest_result",
+        lambda client, backtest_id: {"id": backtest_id, "data": {"state": "0"}},
+    )
+    monkeypatch.setattr(backtest.time, "sleep", lambda seconds: None)
+
+    payload = backtest.wait_for_backtest(object(), "bt1", timeout=60, poll_interval=5)
+
+    assert payload["status"] == "done"
+    assert payload["resolved_id"] == "detail-id"
+    assert payload["metrics"] == {"report_done_seconds": 1}
+
+
+def test_wait_for_backtest_prefers_failed_result_over_done_list_without_core_metrics(monkeypatch):
+    from jqcli.commands import backtest
+
+    monkeypatch.setattr(backtest, "get_backtest_stats", lambda client, backtest_id: {"id": backtest_id, "metrics": []})
+    monkeypatch.setattr(backtest, "get_backtest", lambda client, backtest_id: {"id": backtest_id, "status": "running"})
+    monkeypatch.setattr(
+        backtest,
+        "find_backtest_list_item",
+        lambda client, backtest_id, strategy_id, compile_only: {"id": "detail-id", "status": "done"},
+    )
+    monkeypatch.setattr(
+        backtest,
+        "get_backtest_result",
+        lambda client, backtest_id: {"id": backtest_id, "data": {"state": "1", "message": "failed"}},
+    )
+    monkeypatch.setattr(
+        backtest,
+        "get_backtest_logs",
+        lambda client, backtest_id, error=False: {"id": backtest_id, "kind": "error", "logs": ["Traceback"]},
+    )
+    monkeypatch.setattr(backtest.time, "sleep", lambda seconds: None)
+
+    payload = backtest.wait_for_backtest(object(), "bt1", timeout=60, poll_interval=5)
+
+    assert payload["status"] == "failed"
+    assert payload["result_status"] == "failed"
+    assert payload["error_logs"] == ["Traceback"]
 
 
 def test_wait_for_backtest_ignores_early_failed_result_state_when_list_is_running(monkeypatch):

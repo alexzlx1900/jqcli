@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from datetime import date
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import click
 from rich.console import Console
@@ -18,9 +18,12 @@ from jqcli.api.backtest import (
     run_backtest,
 )
 from jqcli.api.client import ApiClient
-from jqcli.cli import AppContext
 from jqcli.errors import ConfirmationRequiredError, NotAuthenticatedError, TimeoutError
 from jqcli.output import write_json
+
+
+if TYPE_CHECKING:
+    from jqcli.cli import AppContext
 
 
 TERMINAL_STATUSES = {"done", "failed", "cancelled"}
@@ -108,6 +111,26 @@ def _stats_payload(backtest_id: str, stats_payload: dict[str, Any], *, status: s
     }
 
 
+def _attach_error_logs(client: ApiClient, payload: dict[str, Any]) -> dict[str, Any]:
+    backtest_id = str(payload.get("resolved_id") or payload.get("id") or "")
+    if not backtest_id:
+        return payload
+    try:
+        error_payload = get_backtest_logs(client, backtest_id, error=True)
+    except Exception as exc:
+        return {**payload, "error_log_error": str(exc)}
+    logs = error_payload.get("logs", [])
+    status = "failed" if logs and payload.get("status") == "cancelled" else payload.get("status")
+    result_status = "failed" if logs and payload.get("result_status") == "cancelled" else payload.get("result_status")
+    return {
+        **payload,
+        "status": status,
+        "result_status": result_status,
+        "error_logs": logs,
+        "error_log": error_payload,
+    }
+
+
 def wait_for_backtest(
     client: ApiClient,
     backtest_id: str,
@@ -120,6 +143,7 @@ def wait_for_backtest(
     deadline = time.monotonic() + timeout
     last_payload: dict[str, Any] | None = None
     while True:
+        list_done_without_core_metrics = False
         stats_payload = get_backtest_stats(client, backtest_id)
         metrics = stats_payload.get("metrics")
         if isinstance(metrics, dict) and metrics:
@@ -150,20 +174,29 @@ def wait_for_backtest(
             if list_status == "done":
                 resolved_stats_payload = get_backtest_stats(client, resolved_id)
                 payload = _stats_payload(backtest_id, resolved_stats_payload, status="done")
+                payload["resolved_id"] = resolved_stats_payload.get("resolved_id") or resolved_id
                 payload["list_item"] = list_item
                 last_payload = payload
                 if has_core_metrics(payload):
                     return payload
+                list_done_without_core_metrics = True
             elif list_status in {"failed", "cancelled"}:
-                return last_payload
+                return _attach_error_logs(client, last_payload)
         result_payload = get_backtest_result(client, backtest_id)
         status = result_status(result_payload)
         if status:
             last_payload = {
                 **(last_payload or {"id": backtest_id}),
+                "status": status if status in TERMINAL_STATUSES else last_payload.get("status", "running"),
                 "result_status": status,
                 "result": result_payload.get("data", {}),
             }
+            if status == "done" and not list_item:
+                return last_payload
+            if status in {"failed", "cancelled"} and not (list_item and str(list_item.get("status", "")) == "running"):
+                return _attach_error_logs(client, last_payload)
+        if list_done_without_core_metrics:
+            return last_payload or {"id": backtest_id, "status": "done"}
         if time.monotonic() >= deadline:
             raise TimeoutError()
         time.sleep(poll_interval)
@@ -175,6 +208,7 @@ def wait_for_backtest(
 @click.option("--end", "end_date")
 @click.option("--capital", type=float)
 @click.option("--freq", "frequency", type=click.Choice(["day", "minute"]), default="day")
+@click.option("--use-credit", is_flag=True, help="Allow using credits when free backtest time is insufficient")
 @click.option("--compile", "compile_only", is_flag=True, help="只做编译运行，不进入正式回测列表")
 @click.option("--wait", "wait_result", is_flag=True)
 @click.option("--wait-timeout", type=float, default=600, show_default=True, help="等待回测完成的最长秒数")
@@ -188,6 +222,7 @@ def run(
     capital: float | None,
     frequency: str,
     compile_only: bool,
+    use_credit: bool,
     wait_result: bool,
     wait_timeout: float,
     poll_interval: float,
@@ -204,6 +239,7 @@ def run(
             capital=capital,
             frequency=frequency,
             compile_only=compile_only,
+            use_credit=use_credit,
         )
         if wait_result:
             payload = wait_for_backtest(

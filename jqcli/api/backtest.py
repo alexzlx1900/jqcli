@@ -8,9 +8,14 @@ from typing import Any
 
 from .client import ApiClient
 from .strategy import parse_strategy_edit_html
+from jqcli.errors import ApiError
 
 
 STATUS_MAP = {"0": "running", "1": "failed", "2": "done", "3": "cancelled"}
+BUILD_ERROR_MESSAGES = {
+    "50000": "免费回测时间不足；如确认消耗积分继续运行，请传入 --use-credit。",
+    "50001": "积分不足，无法继续运行回测。",
+}
 
 
 class _BacktestListParser(HTMLParser):
@@ -194,6 +199,7 @@ def run_backtest(
     capital: float | None = None,
     frequency: str = "day",
     compile_only: bool = False,
+    use_credit: bool = False,
 ) -> dict[str, Any]:
     html = client.get_text("/algorithm/index/edit", params={"algorithmId": strategy_id})
     detail = parse_strategy_edit_html(html, requested_id=strategy_id)
@@ -208,6 +214,8 @@ def run_backtest(
         form["backtest[baseCapital]"] = str(capital)
     form["backtest[frequency]"] = "minute" if frequency == "minute" else "day"
     form["backtest[type]"] = "1" if compile_only else "0"
+    if use_credit:
+        form["useCredit"] = "1"
     data = client.post(
         "/algorithm/index/build",
         data=form,
@@ -216,6 +224,10 @@ def run_backtest(
     inner: dict[str, Any] = {}
     if isinstance(data, dict) and isinstance(data.get("data"), dict):
         inner = data["data"]
+    if not inner or not (inner.get("backtestId_") or inner.get("backtestId")):
+        raw_msg = str(data.get("msg", "")) if isinstance(data, dict) else ""
+        message = BUILD_ERROR_MESSAGES.get(raw_msg) or f"创建回测失败：{raw_msg or data}"
+        raise ApiError(message, details={"response": data})
     return {
         "id": str(inner.get("backtestId_") or inner.get("backtestId") or ""),
         "list_id": str(inner.get("backtestId") or ""),

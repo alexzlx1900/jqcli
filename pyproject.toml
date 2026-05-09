@@ -23,6 +23,9 @@ test = [
 [project.scripts]
 jqcli = "jqcli.cli:main"
 
+[tool.setuptools]
+packages = ["jqcli"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
