@@ -51,7 +51,22 @@ class ApiClient:
             raise NotFoundError("资源不存在")
         if response.status_code >= 400:
             raise ApiError(f"请求失败（HTTP {response.status_code}）", status_code=response.status_code)
+        self._raise_for_login_redirect(response)
         return response
+
+    @staticmethod
+    def _raise_for_login_redirect(response: httpx.Response) -> None:
+        try:
+            data = response.json()
+        except ValueError:
+            return
+        if not isinstance(data, dict):
+            return
+        redirect = str(data.get("redirect") or data.get("url") or "")
+        code = str(data.get("code") or "")
+        status = str(data.get("status") or "")
+        if "/user/login" in redirect or code == "10001" or (status == "1" and redirect):
+            raise NotAuthenticatedError("登录已过期或凭据无效")
 
     def request(self, method: str, path: str, **kwargs: Any) -> Any:
         response = self._send(method, path, **kwargs)

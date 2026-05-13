@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import base64
+import csv
 import re
 from html import unescape
 from html.parser import HTMLParser
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -271,6 +273,119 @@ def list_strategies(client: ApiClient, *, sort: str = "updated", limit: int = 50
     if not all_items:
         items = items[:limit]
     return {"items": items}
+
+
+def list_strategy_folders(client: ApiClient, *, parent_id: str = "0") -> dict[str, Any]:
+    data = client.get("/algorithm/index/GetFileList", params={"pId": parent_id})
+    file_arr = {}
+    if isinstance(data, dict):
+        inner = data.get("data")
+        if isinstance(inner, dict):
+            file_arr = inner.get("fileArr") or []
+        else:
+            file_arr = data.get("fileArr") or []
+    folders = []
+    if isinstance(file_arr, list):
+        for item in file_arr:
+            if not isinstance(item, dict):
+                continue
+            folder_id = item.get("fId") or item.get("id")
+            name = item.get("name")
+            if folder_id is not None and name:
+                folders.append({"id": str(folder_id), "name": str(name)})
+    return {"items": folders, "parent_id": parent_id}
+
+
+def create_strategy_folder(client: ApiClient, name: str, *, parent_id: str = "0") -> dict[str, Any]:
+    data = client.get("/algorithm/index/AddFile", params={"name": name, "pId": parent_id})
+    folder_id = ""
+    if isinstance(data, dict):
+        inner = data.get("data")
+        if inner is not None:
+            folder_id = str(inner)
+        elif data.get("fId") is not None:
+            folder_id = str(data["fId"])
+    return {"id": folder_id, "name": name, "parent_id": parent_id, "response": data}
+
+
+def move_strategies_to_folder(client: ApiClient, internal_ids: list[str], folder_id: str) -> dict[str, Any]:
+    ids = ",".join([str(value) for value in internal_ids if str(value)])
+    if not ids:
+        return {"ok": True, "moved": 0, "folder_id": folder_id, "response": None}
+    data = client.get("/algorithm/index/AlgorithmToFile", params={"ids": ids, "fId": folder_id})
+    ok = True
+    if isinstance(data, dict):
+        ok = data.get("status") in (None, 0, "0") and data.get("code") in (None, "00000", 0)
+    return {"ok": ok, "moved": len(internal_ids), "folder_id": folder_id, "response": data}
+
+
+def build_strategy_folder_sync_plan(
+    remote_items: list[dict[str, Any]],
+    index_rows: list[dict[str, str]],
+    *,
+    root_folder_name: str,
+    category_names: dict[str, str],
+) -> dict[str, Any]:
+    remote_by_id = {str(item.get("id", "")): item for item in remote_items}
+    remote_by_name = {str(item.get("name", "")): item for item in remote_items}
+    categories: dict[str, dict[str, Any]] = {}
+    skipped_existing_folder: list[dict[str, Any]] = []
+    unmatched: list[dict[str, Any]] = []
+    planned_total = 0
+    for row in index_rows:
+        strategy_id = str(row.get("strategy_id") or "")
+        name = str(row.get("name") or "")
+        remote = remote_by_id.get(strategy_id) or remote_by_name.get(name)
+        if not remote:
+            unmatched.append({"strategy_id": strategy_id, "name": name, "reason": "not_found_in_remote"})
+            continue
+        folder_id = str(remote.get("folder_id") or "")
+        if folder_id:
+            skipped_existing_folder.append(
+                {
+                    "strategy_id": strategy_id,
+                    "name": name,
+                    "remote_id": remote.get("id", ""),
+                    "folder_id": folder_id,
+                }
+            )
+            continue
+        internal_id = str(remote.get("internal_id") or "")
+        if not internal_id:
+            unmatched.append({"strategy_id": strategy_id, "name": name, "reason": "missing_internal_id"})
+            continue
+        category = str(row.get("primary_category") or "uncategorized")
+        folder_name = category_names.get(category, category)
+        bucket = categories.setdefault(category, {"folder_name": folder_name, "items": []})
+        bucket["items"].append(
+            {
+                "strategy_id": strategy_id,
+                "remote_id": remote.get("id", ""),
+                "internal_id": internal_id,
+                "name": name,
+                "current_folder_id": "",
+            }
+        )
+        planned_total += 1
+    return {
+        "root_folder_name": root_folder_name,
+        "categories": categories,
+        "planned_move_count": planned_total,
+        "skipped_existing_folder_count": len(skipped_existing_folder),
+        "skipped_existing_folder": skipped_existing_folder,
+        "unmatched_count": len(unmatched),
+        "unmatched": unmatched,
+    }
+
+
+def load_strategy_index_rows(path: str) -> list[dict[str, str]]:
+    try:
+        with Path(path).open(encoding="utf-8-sig", newline="") as file:
+            return [dict(row) for row in csv.DictReader(file)]
+    except OSError as exc:
+        from jqcli.errors import FileError
+
+        raise FileError(f"无法读取索引文件 {path}") from exc
 
 
 def parse_strategy_edit_html(html: str, *, requested_id: str) -> dict[str, Any]:

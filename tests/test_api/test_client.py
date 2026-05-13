@@ -24,6 +24,15 @@ def test_client_can_return_text_response():
     assert client.get_text("/page") == "<html></html>"
 
 
+def test_client_maps_joinquant_login_redirect_json_to_auth_error():
+    client = make_client(
+        lambda request: httpx.Response(200, json={"redirect": "/user/login/index", "status": "1", "code": "10001"})
+    )
+
+    with pytest.raises(NotAuthenticatedError):
+        client.get_text("/algorithm/index/list")
+
+
 @pytest.mark.parametrize(
     ("status_code", "error_type"),
     [(401, NotAuthenticatedError), (403, NotAuthenticatedError), (404, NotFoundError), (500, ApiError)],

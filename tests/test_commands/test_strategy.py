@@ -19,7 +19,7 @@ def test_strategy_ls_json(monkeypatch, tmp_path):
 
 
 def test_strategy_requires_auth(tmp_path):
-    result = CliRunner().invoke(
+    result = CliRunner(mix_stderr=False).invoke(
         main,
         ["--config", str(tmp_path / "c.json"), "--format", "json", "strategy", "ls"],
     )
@@ -91,7 +91,7 @@ def test_strategy_new_reads_code_stdin(monkeypatch, tmp_path):
 def test_strategy_edit_requires_change(monkeypatch, tmp_path):
     monkeypatch.setattr("jqcli.commands.strategy.make_client", lambda app: object())
 
-    result = CliRunner().invoke(
+    result = CliRunner(mix_stderr=False).invoke(
         main,
         [
             "--config",
@@ -111,7 +111,7 @@ def test_strategy_edit_requires_change(monkeypatch, tmp_path):
 
 
 def test_strategy_rm_non_interactive_requires_yes(tmp_path):
-    result = CliRunner().invoke(
+    result = CliRunner(mix_stderr=False).invoke(
         main,
         [
             "--config",
@@ -155,3 +155,46 @@ def test_strategy_rm_with_yes(monkeypatch, tmp_path):
     assert result.exit_code == 0
     assert json.loads(result.output) == {"ok": True, "id": "s1"}
 
+
+def test_strategy_folder_sync_dry_run(monkeypatch, tmp_path):
+    index = tmp_path / "index.csv"
+    index.write_text(
+        "strategy_id,name,primary_category\n"
+        "s1,策略1,small_micro_cap\n"
+        "s2,策略2,ml_ai\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("jqcli.commands.strategy.make_client", lambda app: object())
+    monkeypatch.setattr(
+        "jqcli.commands.strategy.list_strategies",
+        lambda client, **kwargs: {
+            "items": [
+                {"id": "s1", "internal_id": "i1", "name": "策略1"},
+                {"id": "s2", "internal_id": "i2", "name": "策略2", "folder_id": "old"},
+            ]
+        },
+    )
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "--config",
+            str(tmp_path / "c.json"),
+            "--token",
+            "tok",
+            "--format",
+            "json",
+            "strategy",
+            "folder-sync",
+            "--from-index",
+            str(index),
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["dry_run"] is True
+    assert payload["planned_move_count"] == 1
+    assert payload["skipped_existing_folder_count"] == 1
+    assert "executed" not in payload

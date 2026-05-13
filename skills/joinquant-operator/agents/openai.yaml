@@ -1,0 +1,7 @@
+interface:
+  display_name: "JoinQuant Operator"
+  short_description: "Operate 聚宽 strategies and backtests via jqcli"
+  brand_color: "#2563EB"
+  default_prompt: "Use $joinquant-operator to check my JoinQuant auth status and list my strategies."
+policy:
+  allow_implicit_invocation: true

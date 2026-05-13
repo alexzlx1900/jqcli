@@ -4,6 +4,7 @@ import json
 import sys
 from typing import Any
 
+import click
 from rich.console import Console
 
 from .errors import JqcliError, error_payload
@@ -11,12 +12,18 @@ from .errors import JqcliError, error_payload
 
 def write_json(payload: Any, *, err: bool = False) -> None:
     text = json.dumps(payload, ensure_ascii=False, indent=2)
+    if err:
+        click.echo(text, err=True)
+        return
     stream = sys.stderr if err else sys.stdout
     stream.write(text + "\n")
 
 
 def write_json_line(payload: Any, *, err: bool = False) -> None:
     text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    if err:
+        click.echo(text, err=True)
+        return
     stream = sys.stderr if err else sys.stdout
     stream.write(text + "\n")
     stream.flush()

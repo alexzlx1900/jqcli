@@ -9,7 +9,18 @@ from rich.console import Console
 from rich.table import Table
 
 from jqcli.api.client import ApiClient
-from jqcli.api.strategy import create_strategy, delete_strategy, get_strategy, list_strategies, update_strategy
+from jqcli.api.strategy import (
+    build_strategy_folder_sync_plan,
+    create_strategy_folder,
+    create_strategy,
+    delete_strategy,
+    get_strategy,
+    list_strategies,
+    list_strategy_folders,
+    load_strategy_index_rows,
+    move_strategies_to_folder,
+    update_strategy,
+)
 from jqcli.cli import AppContext
 from jqcli.errors import ConfirmationRequiredError, FileError, NotAuthenticatedError, UsageError
 from jqcli.output import write_json
@@ -187,3 +198,101 @@ def rm(app: AppContext, strategy_id: str, yes: bool) -> None:
         write_json(payload)
     elif not app.quiet:
         click.echo(f"策略已删除：{strategy_id}")
+
+
+CATEGORY_FOLDER_NAMES = {
+    "small_micro_cap": "01_小市值微盘",
+    "etf_fund_rotation": "02_ETF基金轮动",
+    "ml_ai": "03_机器学习AI",
+    "short_term_breakout": "04_短线打板突破",
+    "factor_value_quality": "05_因子价值质量",
+    "timing_technical": "06_择时技术指标",
+    "multi_strategy_portfolio": "07_多策略组合配置",
+    "futures_convertible_arbitrage": "08_期货转债套利",
+    "grid_intraday": "09_网格日内交易",
+    "live_trading_ops": "10_实盘交易对接",
+    "research_template_tooling": "11_研究模板工具",
+    "uncategorized": "99_未分类",
+}
+
+
+def _folders_by_name(client: ApiClient, parent_id: str) -> dict[str, dict[str, Any]]:
+    payload = list_strategy_folders(client, parent_id=parent_id)
+    return {str(item["name"]): item for item in payload.get("items", [])}
+
+
+@strategy_group.command("folder-sync")
+@click.option("--from-index", "index_path", required=True, type=click.Path(dir_okay=False, path_type=str))
+@click.option("--root-folder", default="Codex策略分类", show_default=True)
+@click.option("--dry-run/--no-dry-run", default=True, show_default=True)
+@click.option("--yes", "-y", is_flag=True, help="真正创建文件夹并移动根目录策略")
+@click.option("--batch-size", type=int, default=50, show_default=True)
+@click.pass_obj
+def folder_sync(app: AppContext, index_path: str, root_folder: str, dry_run: bool, yes: bool, batch_size: int) -> None:
+    if batch_size <= 0:
+        raise UsageError("--batch-size 必须大于 0")
+    if app.non_interactive and not dry_run and not yes:
+        raise ConfirmationRequiredError()
+    if not dry_run and not yes:
+        click.confirm("确认在聚宽远端创建分类文件夹并移动根目录策略？", abort=True)
+    index_rows = load_strategy_index_rows(index_path)
+    client = make_client(app)
+    try:
+        remote_items = list_strategies(client, all_items=True).get("items", [])
+        plan = build_strategy_folder_sync_plan(
+            list(remote_items),
+            index_rows,
+            root_folder_name=root_folder,
+            category_names=CATEGORY_FOLDER_NAMES,
+        )
+        plan["dry_run"] = dry_run
+        plan["existing_remote_count"] = len(remote_items)
+        plan["index_count"] = len(index_rows)
+        if not dry_run:
+            root_folders = _folders_by_name(client, "0")
+            root = root_folders.get(root_folder)
+            if root:
+                root_id = str(root["id"])
+                created_root = False
+            else:
+                created = create_strategy_folder(client, root_folder, parent_id="0")
+                root_id = str(created.get("id") or "")
+                created_root = True
+            if not root_id:
+                raise UsageError("无法获取或创建目标根文件夹")
+            child_folders = _folders_by_name(client, root_id)
+            created_folders: list[dict[str, Any]] = []
+            moved: list[dict[str, Any]] = []
+            for category, bucket in plan["categories"].items():
+                folder_name = str(bucket["folder_name"])
+                folder = child_folders.get(folder_name)
+                if folder:
+                    target_id = str(folder["id"])
+                else:
+                    created = create_strategy_folder(client, folder_name, parent_id=root_id)
+                    target_id = str(created.get("id") or "")
+                    created_folders.append({"category": category, "folder_name": folder_name, "folder_id": target_id})
+                if not target_id:
+                    raise UsageError(f"无法获取或创建分类文件夹：{folder_name}")
+                internal_ids = [str(item["internal_id"]) for item in bucket["items"]]
+                for start in range(0, len(internal_ids), batch_size):
+                    batch = internal_ids[start : start + batch_size]
+                    result = move_strategies_to_folder(client, batch, target_id)
+                    moved.append({"category": category, "folder_id": target_id, "count": len(batch), "ok": result.get("ok")})
+            plan["executed"] = {
+                "root_folder_id": root_id,
+                "created_root": created_root,
+                "created_folders": created_folders,
+                "move_batches": moved,
+                "moved_count": sum(int(item["count"]) for item in moved),
+            }
+    finally:
+        close_client(client)
+    if app.json_output:
+        write_json(plan)
+    else:
+        click.echo(f"索引策略数: {plan['index_count']}")
+        click.echo(f"远端策略数: {plan['existing_remote_count']}")
+        click.echo(f"计划移动根目录策略: {plan['planned_move_count']}")
+        click.echo(f"跳过已有文件夹策略: {plan['skipped_existing_folder_count']}")
+        click.echo(f"未匹配策略: {plan['unmatched_count']}")

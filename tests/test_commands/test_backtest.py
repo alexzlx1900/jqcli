@@ -314,7 +314,7 @@ def test_backtest_error_logs_json(monkeypatch, tmp_path):
 
 
 def test_backtest_rm_non_interactive_requires_yes(tmp_path):
-    result = CliRunner().invoke(
+    result = CliRunner(mix_stderr=False).invoke(
         main,
         [
             "--config",

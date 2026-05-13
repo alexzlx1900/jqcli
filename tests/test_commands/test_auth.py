@@ -38,7 +38,7 @@ def test_logout_clears_config_credentials(tmp_path):
 
 
 def test_login_requires_password_or_env(tmp_path):
-    result = CliRunner().invoke(
+    result = CliRunner(mix_stderr=False).invoke(
         main,
         [
             "--config",

@@ -23,8 +23,8 @@ test = [
 [project.scripts]
 jqcli = "jqcli.cli:main"
 
-[tool.setuptools]
-packages = ["jqcli"]
+[tool.setuptools.packages.find]
+include = ["jqcli*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -4,10 +4,14 @@ import httpx
 
 from jqcli.api.client import ApiClient
 from jqcli.api.strategy import (
+    build_strategy_folder_sync_plan,
     create_strategy,
+    create_strategy_folder,
     delete_strategy,
     get_strategy,
     list_strategies,
+    list_strategy_folders,
+    move_strategies_to_folder,
     parse_strategy_edit_html,
     parse_strategy_list_html,
     update_strategy,
@@ -243,3 +247,52 @@ def test_delete_strategy():
 
     assert payload["ok"] is True
     assert seen == ["/algorithm/index/list", "/algorithm/index/del"]
+
+
+def test_folder_sync_plan_only_moves_root_strategies():
+    remote_items = [
+        {"id": "s1", "internal_id": "i1", "name": "策略1"},
+        {"id": "s2", "internal_id": "i2", "name": "策略2", "folder_id": "old-folder"},
+    ]
+    index_rows = [
+        {"strategy_id": "s1", "name": "策略1", "primary_category": "small_micro_cap"},
+        {"strategy_id": "s2", "name": "策略2", "primary_category": "ml_ai"},
+        {"strategy_id": "missing", "name": "缺失", "primary_category": "ml_ai"},
+    ]
+
+    plan = build_strategy_folder_sync_plan(
+        remote_items,
+        index_rows,
+        root_folder_name="Codex策略分类",
+        category_names={"small_micro_cap": "01_小市值微盘", "ml_ai": "03_机器学习AI"},
+    )
+
+    assert plan["planned_move_count"] == 1
+    assert plan["categories"]["small_micro_cap"]["items"][0]["internal_id"] == "i1"
+    assert plan["skipped_existing_folder_count"] == 1
+    assert plan["skipped_existing_folder"][0]["strategy_id"] == "s2"
+    assert plan["unmatched_count"] == 1
+
+
+def test_folder_api_endpoints():
+    seen = []
+
+    def handler(request):
+        seen.append((request.method, request.url.path, dict(request.url.params)))
+        if request.url.path == "/algorithm/index/GetFileList":
+            return httpx.Response(200, json={"data": {"fileArr": [{"fId": "f1", "name": "分类"}]}})
+        if request.url.path == "/algorithm/index/AddFile":
+            return httpx.Response(200, json={"data": "f2", "code": "00000"})
+        if request.url.path == "/algorithm/index/AlgorithmToFile":
+            return httpx.Response(200, json={"code": "00000"})
+        raise AssertionError(request.url.path)
+
+    client = client_with(handler)
+    assert list_strategy_folders(client, parent_id="0")["items"] == [{"id": "f1", "name": "分类"}]
+    assert create_strategy_folder(client, "新分类", parent_id="0")["id"] == "f2"
+    assert move_strategies_to_folder(client, ["i1", "i2"], "f2")["moved"] == 2
+    assert seen == [
+        ("GET", "/algorithm/index/GetFileList", {"pId": "0"}),
+        ("GET", "/algorithm/index/AddFile", {"name": "新分类", "pId": "0"}),
+        ("GET", "/algorithm/index/AlgorithmToFile", {"ids": "i1,i2", "fId": "f2"}),
+    ]
