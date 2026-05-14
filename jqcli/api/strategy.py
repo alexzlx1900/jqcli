@@ -323,7 +323,6 @@ def build_strategy_folder_sync_plan(
     remote_items: list[dict[str, Any]],
     index_rows: list[dict[str, str]],
     *,
-    root_folder_name: str,
     category_names: dict[str, str],
 ) -> dict[str, Any]:
     remote_by_id = {str(item.get("id", "")): item for item in remote_items}
@@ -368,7 +367,7 @@ def build_strategy_folder_sync_plan(
         )
         planned_total += 1
     return {
-        "root_folder_name": root_folder_name,
+        "parent_folder_id": "0",
         "categories": categories,
         "planned_move_count": planned_total,
         "skipped_existing_folder_count": len(skipped_existing_folder),

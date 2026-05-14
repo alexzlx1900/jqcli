@@ -223,12 +223,11 @@ def _folders_by_name(client: ApiClient, parent_id: str) -> dict[str, dict[str, A
 
 @strategy_group.command("folder-sync")
 @click.option("--from-index", "index_path", required=True, type=click.Path(dir_okay=False, path_type=str))
-@click.option("--root-folder", default="Codex策略分类", show_default=True)
 @click.option("--dry-run/--no-dry-run", default=True, show_default=True)
 @click.option("--yes", "-y", is_flag=True, help="真正创建文件夹并移动根目录策略")
 @click.option("--batch-size", type=int, default=50, show_default=True)
 @click.pass_obj
-def folder_sync(app: AppContext, index_path: str, root_folder: str, dry_run: bool, yes: bool, batch_size: int) -> None:
+def folder_sync(app: AppContext, index_path: str, dry_run: bool, yes: bool, batch_size: int) -> None:
     if batch_size <= 0:
         raise UsageError("--batch-size 必须大于 0")
     if app.non_interactive and not dry_run and not yes:
@@ -242,34 +241,23 @@ def folder_sync(app: AppContext, index_path: str, root_folder: str, dry_run: boo
         plan = build_strategy_folder_sync_plan(
             list(remote_items),
             index_rows,
-            root_folder_name=root_folder,
             category_names=CATEGORY_FOLDER_NAMES,
         )
         plan["dry_run"] = dry_run
         plan["existing_remote_count"] = len(remote_items)
         plan["index_count"] = len(index_rows)
         if not dry_run:
-            root_folders = _folders_by_name(client, "0")
-            root = root_folders.get(root_folder)
-            if root:
-                root_id = str(root["id"])
-                created_root = False
-            else:
-                created = create_strategy_folder(client, root_folder, parent_id="0")
-                root_id = str(created.get("id") or "")
-                created_root = True
-            if not root_id:
-                raise UsageError("无法获取或创建目标根文件夹")
-            child_folders = _folders_by_name(client, root_id)
+            parent_id = "0"
+            top_level_folders = _folders_by_name(client, parent_id)
             created_folders: list[dict[str, Any]] = []
             moved: list[dict[str, Any]] = []
             for category, bucket in plan["categories"].items():
                 folder_name = str(bucket["folder_name"])
-                folder = child_folders.get(folder_name)
+                folder = top_level_folders.get(folder_name)
                 if folder:
                     target_id = str(folder["id"])
                 else:
-                    created = create_strategy_folder(client, folder_name, parent_id=root_id)
+                    created = create_strategy_folder(client, folder_name, parent_id=parent_id)
                     target_id = str(created.get("id") or "")
                     created_folders.append({"category": category, "folder_name": folder_name, "folder_id": target_id})
                 if not target_id:
@@ -280,8 +268,7 @@ def folder_sync(app: AppContext, index_path: str, root_folder: str, dry_run: boo
                     result = move_strategies_to_folder(client, batch, target_id)
                     moved.append({"category": category, "folder_id": target_id, "count": len(batch), "ok": result.get("ok")})
             plan["executed"] = {
-                "root_folder_id": root_id,
-                "created_root": created_root,
+                "parent_folder_id": parent_id,
                 "created_folders": created_folders,
                 "move_batches": moved,
                 "moved_count": sum(int(item["count"]) for item in moved),

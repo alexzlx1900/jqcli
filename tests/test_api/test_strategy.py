@@ -263,10 +263,10 @@ def test_folder_sync_plan_only_moves_root_strategies():
     plan = build_strategy_folder_sync_plan(
         remote_items,
         index_rows,
-        root_folder_name="Codex策略分类",
         category_names={"small_micro_cap": "01_小市值微盘", "ml_ai": "03_机器学习AI"},
     )
 
+    assert plan["parent_folder_id"] == "0"
     assert plan["planned_move_count"] == 1
     assert plan["categories"]["small_micro_cap"]["items"][0]["internal_id"] == "i1"
     assert plan["skipped_existing_folder_count"] == 1
