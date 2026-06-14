@@ -6,5 +6,6 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
+.worktrees/
 auto_strategy_optimizer_experiment/
 uv.lock
