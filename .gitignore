@@ -9,3 +9,11 @@ __pycache__/
 .worktrees/
 auto_strategy_optimizer_experiment/
 uv.lock
+
+# Local Codex analysis artifacts
+.codex_work/
+docs/superpowers/
+reports/
+scripts/build_weighted_strategy_clone.py
+tests/test_strategy_analysis_report.py
+tests/test_weighted_strategy_clone.py
